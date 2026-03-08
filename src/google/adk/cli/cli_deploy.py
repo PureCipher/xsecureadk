@@ -17,6 +17,7 @@ from datetime import datetime
 import importlib
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -28,9 +29,12 @@ import warnings
 import click
 from packaging.version import parse
 
+from ..version import __version__ as _CURRENT_ADK_VERSION
+
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
+_SECURE_CONFIG_FLAG_MIN_VERSION: Final[str] = _CURRENT_ADK_VERSION
 _AGENT_ENGINE_REQUIREMENT: Final[str] = (
     'google-cloud-aiplatform[adk,agent_engines]'
 )
@@ -98,20 +102,21 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {secure_config_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
 import os
+import re
 import vertexai
 from vertexai.agent_engines import AdkApp
 
 if {is_config_agent}:
   from google.adk.agents import config_agent_utils
   config_path = os.path.join(os.path.dirname(__file__), "root_agent.yaml")
-  root_agent = config_agent_utils.from_config(config_path)
+  _base_adk_object = config_agent_utils.from_config(config_path)
 else:
-  from .agent import {adk_app_object}
+  from .agent import {adk_app_object} as _base_adk_object
 
 if {express_mode}: # Whether or not to use Express Mode
   vertexai.init(api_key=os.environ.get("GOOGLE_API_KEY"))
@@ -121,10 +126,40 @@ else:
     location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
   )
 
-adk_app = AdkApp(
-    {adk_app_type}={adk_app_object},
-    enable_tracing={trace_to_cloud_option},
-)
+def _build_runtime_subject():
+  secure_config_path = {secure_config_path}
+  from google.adk.apps.app import App
+  from google.adk.cli.utils.secure_runtime_config import (
+      load_secure_runtime_builder,
+  )
+
+  secure_runtime_builder = load_secure_runtime_builder(
+      os.path.dirname(__file__),
+      secure_config_path=secure_config_path,
+  )
+  if secure_runtime_builder is None:
+    return {adk_app_type!r}, _base_adk_object
+
+  if {adk_app_type!r} == "app":
+    return "app", secure_runtime_builder.apply_to_app(_base_adk_object)
+
+  secure_app_name = re.sub(
+      r"\\W|^(?=\\d)", "_", os.path.basename(os.path.dirname(__file__))
+  ) or "agent_engine_secure_app"
+  secure_app = App(name=secure_app_name, root_agent=_base_adk_object)
+  return "app", secure_runtime_builder.apply_to_app(secure_app)
+
+_runtime_subject_type, _runtime_subject = _build_runtime_subject()
+if _runtime_subject_type == "app":
+  adk_app = AdkApp(
+      app=_runtime_subject,
+      enable_tracing={trace_to_cloud_option},
+  )
+else:
+  adk_app = AdkApp(
+      agent=_runtime_subject,
+      enable_tracing={trace_to_cloud_option},
+  )
 """
 
 _AGENT_ENGINE_CLASS_METHODS = [
@@ -623,6 +658,68 @@ def _get_service_option_by_adk_version(
   return ' '.join(options)
 
 
+def _stage_secure_config(
+    *,
+    secure_config: str,
+    agent_src_path: str,
+    app_name: str,
+) -> str:
+  """Stages an explicit SecureADK config file into the deployment image."""
+  config_path = os.path.abspath(secure_config)
+  if not os.path.exists(config_path):
+    raise FileNotFoundError(
+        f'SecureADK config file not found: {config_path}'
+    )
+
+  _, suffix = os.path.splitext(config_path)
+  staged_name = '.secureadk.deploy' + (suffix or '.yaml')
+  staged_path = os.path.join(agent_src_path, staged_name)
+  shutil.copyfile(config_path, staged_path)
+  return f'/app/agents/{app_name}/{staged_name}'
+
+
+def _find_secure_config_in_agent_folder(agent_folder: str) -> Optional[str]:
+  """Returns the bundled SecureADK config file in the agent folder, if any."""
+  for candidate_name in ('secureadk.yaml', 'secureadk.yml', 'secureadk.json'):
+    candidate_path = os.path.join(agent_folder, candidate_name)
+    if os.path.exists(candidate_path):
+      return candidate_path
+  return None
+
+
+def _validate_agent_engine_secure_config_support(
+    *,
+    agent_folder: str,
+    secure_config: Optional[str],
+) -> None:
+  """Rejects SecureADK features unsupported by Agent Engine deployment."""
+  config_path = secure_config or _find_secure_config_in_agent_folder(
+      agent_folder
+  )
+  if not config_path:
+    return
+
+  from .utils.secure_runtime_config import SecureRuntimeFileConfig
+  from .utils.secure_runtime_config import _load_config_data
+
+  try:
+    config = SecureRuntimeFileConfig.model_validate(
+        _load_config_data(Path(os.path.abspath(config_path)))
+    )
+  except Exception as e:
+    raise click.ClickException(
+        'Invalid SecureADK config for `adk deploy agent_engine`: '
+        f'{e}'
+    ) from e
+  if config.enabled and config.artifact_sealing.enabled:
+    raise click.ClickException(
+        'SecureADK artifact sealing is not supported by '
+        '`adk deploy agent_engine` because Agent Engine manages artifact '
+        'services internally. Disable artifact sealing for this deployment '
+        'or use `adk deploy cloud_run` / `adk deploy gke`.'
+    )
+
+
 def to_cloud_run(
     *,
     agent_folder: str,
@@ -642,6 +739,7 @@ def to_cloud_run(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    secure_config: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
@@ -680,9 +778,18 @@ def to_cloud_run(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    secure_config: Optional explicit SecureADK config file to bundle into the
+      deployment image and pass to `adk web` or `adk api_server`.
     use_local_storage: Whether to use local .adk storage in the container.
   """
   app_name = app_name or os.path.basename(agent_folder)
+  if secure_config and parse(adk_version) < parse(
+      _SECURE_CONFIG_FLAG_MIN_VERSION
+  ):
+    raise click.ClickException(
+        '--secure_config requires an ADK version that supports the flag. '
+        f'Please use adk_version >= {_SECURE_CONFIG_FLAG_MIN_VERSION}.'
+    )
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -705,6 +812,14 @@ def to_cloud_run(
         if os.path.exists(requirements_txt_path)
         else '# No requirements.txt found.'
     )
+    secure_config_option = ''
+    if secure_config:
+      staged_secure_config = _stage_secure_config(
+          secure_config=secure_config,
+          agent_src_path=agent_src_path,
+          app_name=app_name,
+      )
+      secure_config_option = f'--secure_config={staged_secure_config}'
     click.echo('Copying agent source code completed.')
 
     # create Dockerfile
@@ -728,6 +843,7 @@ def to_cloud_run(
             memory_service_uri,
             use_local_storage,
         ),
+        secure_config_option=secure_config_option,
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
@@ -820,6 +936,7 @@ def to_agent_engine(
     description: Optional[str] = None,
     requirements_file: Optional[str] = None,
     env_file: Optional[str] = None,
+    secure_config: Optional[str] = None,
     agent_engine_config_file: Optional[str] = None,
     skip_agent_import_validation: bool = True,
 ):
@@ -882,6 +999,10 @@ def to_agent_engine(
       variables. If not specified, the `.env` file in the `agent_folder` will be
       used. The values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`
       will be overridden by `project` and `region` if they are specified.
+    secure_config (str): Optional. Explicit SecureADK config file to bundle
+      into the generated Agent Engine source package. If omitted, SecureADK
+      config files already present in `agent_folder` will still be
+      autodiscovered at runtime.
     agent_engine_config_file (str): The filepath to the agent engine config file
       to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
@@ -942,6 +1063,19 @@ def to_agent_engine(
         ignore=ignore_patterns,
         dirs_exist_ok=True,
     )
+    _validate_agent_engine_secure_config_support(
+        agent_folder=agent_folder,
+        secure_config=secure_config,
+    )
+    staged_secure_config = None
+    if secure_config:
+      staged_secure_config = os.path.basename(
+          _stage_secure_config(
+              secure_config=secure_config,
+              agent_src_path=agent_src_path,
+              app_name=app_name,
+          )
+      )
     click.echo('Copying agent source code complete.')
 
     project = _resolve_project(project)
@@ -1087,13 +1221,22 @@ def to_agent_engine(
       _validate_agent_import(agent_src_path, adk_app_object, is_config_agent)
 
     adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
-    if adk_app_object == 'root_agent':
+    effective_adk_app_object = adk_app_object
+    if is_config_agent:
+      effective_adk_app_object = 'root_agent'
+      if adk_app_object == 'app':
+        click.echo(
+            'Config agents expose `root_agent`; using it for Agent Engine '
+            'deployment instead of `app`.'
+        )
+    if effective_adk_app_object == 'root_agent':
       adk_app_type = 'agent'
-    elif adk_app_object == 'app':
+    elif effective_adk_app_object == 'app':
       adk_app_type = 'app'
     else:
       click.echo(
-          f'Invalid adk_app_object: {adk_app_object}. Please use "root_agent"'
+          'Invalid adk_app_object:'
+          f' {effective_adk_app_object}. Please use "root_agent"'
           ' or "app".'
       )
       return
@@ -1104,9 +1247,10 @@ def to_agent_engine(
               trace_to_cloud_option=trace_to_cloud,
               is_config_agent=is_config_agent,
               agent_folder=f'./{temp_folder}',
-              adk_app_object=adk_app_object,
+              adk_app_object=effective_adk_app_object,
               adk_app_type=adk_app_type,
               express_mode=api_key is not None,
+              secure_config_path=repr(staged_secure_config),
           )
       )
     click.echo(f'Created {adk_app_file}')
@@ -1160,6 +1304,7 @@ def to_gke(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    secure_config: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
 ):
@@ -1188,6 +1333,8 @@ def to_gke(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    secure_config: Optional explicit SecureADK config file to bundle into the
+      deployment image and pass to `adk web` or `adk api_server`.
     use_local_storage: Whether to use local .adk storage in the container.
   """
   click.secho(
@@ -1202,6 +1349,13 @@ def to_gke(
   click.echo('--------------------------------------------------\n')
 
   app_name = app_name or os.path.basename(agent_folder)
+  if secure_config and parse(adk_version) < parse(
+      _SECURE_CONFIG_FLAG_MIN_VERSION
+  ):
+    raise click.ClickException(
+        '--secure_config requires an ADK version that supports the flag. '
+        f'Please use adk_version >= {_SECURE_CONFIG_FLAG_MIN_VERSION}.'
+    )
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -1225,6 +1379,14 @@ def to_gke(
         if os.path.exists(requirements_txt_path)
         else ''
     )
+    secure_config_option = ''
+    if secure_config:
+      staged_secure_config = _stage_secure_config(
+          secure_config=secure_config,
+          agent_src_path=agent_src_path,
+          app_name=app_name,
+      )
+      secure_config_option = f'--secure_config={staged_secure_config}'
     click.secho('✅ Environment prepared.', fg='green')
 
     allow_origins_option = (
@@ -1249,6 +1411,7 @@ def to_gke(
             memory_service_uri,
             use_local_storage,
         ),
+        secure_config_option=secure_config_option,
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,

@@ -236,6 +236,7 @@ def test_agent_engine_app_template_compiles_with_windows_paths() -> None:
       adk_app_type="agent",
       trace_to_cloud_option=False,
       express_mode=False,
+      secure_config_path=repr(".secureadk.deploy.yaml"),
   )
   compile(rendered, "<agent_engine_app.py>", "exec")
 
@@ -297,7 +298,8 @@ def test_to_agent_engine_happy_path(
   content = adk_app_file.read_text()
   assert "from .agent import root_agent" in content
   assert "adk_app = AdkApp(" in content
-  assert "agent=root_agent" in content
+  assert "agent=_runtime_subject" in content
+  assert "return 'agent', _base_adk_object" in content
   assert "enable_tracing=True" in content
   reqs_path = tmp_dir / "requirements.txt"
   assert reqs_path.is_file()
@@ -358,6 +360,79 @@ def test_to_agent_engine_skips_agent_import_validation_by_default(
   assert validate_recorder.calls == []
 
 
+def test_to_agent_engine_stages_secure_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """It should stage `--secure_config` and load it in the generated app."""
+  rmtree_recorder = _Recorder()
+  monkeypatch.setattr(shutil, "rmtree", rmtree_recorder)
+
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, *, config: Dict[str, Any]) -> Any:
+      del config
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+  class _FakeVertexClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  src_dir = agent_dir(False, False)
+  secure_config = tmp_path / "secureadk.yaml"
+  secure_config.write_text(
+      "\n".join((
+          "enabled: true",
+          "signing_keys:",
+          "  default:",
+          "    secret: test-secret",
+          "identities:",
+          "  - agent_name: dummy_agent",
+          "    key_id: default",
+          "    tenant_id: tenant-1",
+      )),
+      encoding="utf-8",
+  )
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      adk_app="my_adk_app",
+      trace_to_cloud=True,
+      project="my-gcp-project",
+      region="us-central1",
+      secure_config=str(secure_config),
+  )
+
+  tmp_dir = src_dir.parent / "tmp"
+  staged_config = tmp_dir / ".secureadk.deploy.yaml"
+  assert staged_config.is_file()
+  assert staged_config.read_text(encoding="utf-8") == secure_config.read_text(
+      encoding="utf-8"
+  )
+
+  content = (tmp_dir / "my_adk_app.py").read_text(encoding="utf-8")
+  assert "load_secure_runtime_builder" in content
+  assert "secure_config_path = '.secureadk.deploy.yaml'" in content
+  assert 'return "app", secure_runtime_builder.apply_to_app(secure_app)' in (
+      content
+  )
+  assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
+
+
 def test_to_agent_engine_validates_agent_import_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],
@@ -408,6 +483,39 @@ def test_to_agent_engine_validates_agent_import_when_enabled(
   )
 
   assert len(validate_recorder.calls) == 1
+
+
+def test_to_agent_engine_rejects_artifact_sealing_secure_config(
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """It should fail fast when SecureADK artifact sealing is configured."""
+  src_dir = agent_dir(False, False)
+  (src_dir / "secureadk.yaml").write_text(
+      "\n".join((
+          "enabled: true",
+          "signing_keys:",
+          "  default:",
+          "    secret: test-secret",
+          "identities:",
+          "  - agent_name: dummy_agent",
+          "    key_id: default",
+          "    tenant_id: tenant-1",
+          "artifact_sealing:",
+          "  enabled: true",
+          "  signing_key_id: default",
+      )),
+      encoding="utf-8",
+  )
+
+  with pytest.raises(click.ClickException, match="artifact sealing"):
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        adk_app="my_adk_app",
+        trace_to_cloud=True,
+        project="my-gcp-project",
+        region="us-central1",
+    )
 
 
 @pytest.mark.parametrize("include_requirements", [True, False])
@@ -512,6 +620,54 @@ def test_to_gke_happy_path(
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+def test_to_gke_stages_secure_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """`to_gke` should stage an explicit SecureADK config into the image."""
+  src_dir = agent_dir(False, False)
+  build_dir = tmp_path / "build"
+  secure_config = tmp_path / "secure-config.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+
+  def mock_subprocess_run(*args, **kwargs):
+    del kwargs
+    command_list = args[0]
+    if command_list and command_list[0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="deployment.apps/gke-svc created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version=cli_deploy._SECURE_CONFIG_FLAG_MIN_VERSION,
+      secure_config=str(secure_config),
+  )
+
+  dockerfile_content = (build_dir / "Dockerfile").read_text()
+  assert (
+      "--secure_config=/app/agents/agent/.secureadk.deploy.yaml"
+      in dockerfile_content
+  )
+  staged_config = build_dir / "agents" / "agent" / ".secureadk.deploy.yaml"
+  assert staged_config.is_file()
+  assert staged_config.read_text(encoding="utf-8") == "enabled: false\n"
 
 
 # _validate_agent_import tests

@@ -20,6 +20,7 @@ import importlib
 import json
 import logging
 import os
+from pathlib import Path
 import sys
 import time
 import traceback
@@ -97,6 +98,8 @@ from .utils import common
 from .utils import envs
 from .utils import evals
 from .utils.base_agent_loader import BaseAgentLoader
+from .utils.secure_runtime_config import apply_secure_runtime_if_configured
+from .utils.secure_runtime_config import resolve_loaded_app_root
 from .utils.shared_value import SharedValue
 from .utils.state import create_empty_state
 
@@ -498,6 +501,7 @@ class AdkWebServer:
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
       auto_create_session: bool = False,
+      secure_config: Optional[str] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -514,8 +518,10 @@ class AdkWebServer:
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
+    self.app_artifact_service_dict: dict[str, BaseArtifactService] = {}
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
+    self.secure_config = secure_config
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -523,6 +529,7 @@ class AdkWebServer:
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
       runner = self.runner_dict.pop(app_name, None)
+      self.app_artifact_service_dict.pop(app_name, None)
       await cleanup.close_runners(list([runner]))
 
     # Return cached runner if exists
@@ -532,6 +539,10 @@ class AdkWebServer:
     # Create new runner
     envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
     agent_or_app = self.agent_loader.load_agent(app_name)
+    app_root = resolve_loaded_app_root(
+        agent_or_app,
+        fallback_root=Path(self.agents_dir) / app_name,
+    )
 
     # Instantiate extra plugins if configured
     extra_plugins_instances = self._instantiate_extra_plugins()
@@ -547,8 +558,19 @@ class AdkWebServer:
       agent_or_app.plugins = agent_or_app.plugins + extra_plugins_instances
       agentic_app = agent_or_app
 
-    runner = self._create_runner(agentic_app)
+    agentic_app, artifact_service = apply_secure_runtime_if_configured(
+        app=agentic_app,
+        artifact_service=self.artifact_service,
+        app_root=app_root,
+        secure_config_path=self.secure_config,
+    )
+
+    runner_artifact_service = artifact_service or self.artifact_service
+    runner = self._create_runner(
+        agentic_app, artifact_service=runner_artifact_service
+    )
     self.runner_dict[app_name] = runner
+    self.app_artifact_service_dict[app_name] = runner_artifact_service
     return runner
 
   def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
@@ -557,16 +579,32 @@ class AdkWebServer:
       return agent_or_app.root_agent
     return agent_or_app
 
-  def _create_runner(self, agentic_app: App) -> Runner:
+  def _create_runner(
+      self,
+      agentic_app: App,
+      *,
+      artifact_service: Optional[BaseArtifactService] = None,
+  ) -> Runner:
     """Create a runner with common services."""
     return Runner(
         app=agentic_app,
-        artifact_service=self.artifact_service,
+        artifact_service=artifact_service or self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
         auto_create_session=self.auto_create_session,
     )
+
+  async def _get_artifact_service_async(
+      self, app_name: str
+  ) -> BaseArtifactService:
+    """Returns the configured artifact service for an app."""
+    artifact_service = self.app_artifact_service_dict.get(app_name)
+    if artifact_service is not None:
+      return artifact_service
+
+    await self.get_runner_async(app_name)
+    return self.app_artifact_service_dict.get(app_name, self.artifact_service)
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:
     """Instantiate extra plugins from the configured list.
@@ -1344,7 +1382,7 @@ class AdkWebServer:
             eval_sets_manager=self.eval_sets_manager,
             eval_set_results_manager=self.eval_set_results_manager,
             session_service=self.session_service,
-            artifact_service=self.artifact_service,
+            artifact_service=await self._get_artifact_service_async(app_name),
         )
         inference_request = InferenceRequest(
             app_name=app_name,
@@ -1449,7 +1487,8 @@ class AdkWebServer:
         artifact_name: str,
         version: Optional[int] = Query(None),
     ) -> Optional[types.Part]:
-      artifact = await self.artifact_service.load_artifact(
+      artifact_service = await self._get_artifact_service_async(app_name)
+      artifact = await artifact_service.load_artifact(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
@@ -1471,7 +1510,8 @@ class AdkWebServer:
         session_id: str,
         artifact_name: str,
     ) -> list[ArtifactVersion]:
-      return await self.artifact_service.list_artifact_versions(
+      artifact_service = await self._get_artifact_service_async(app_name)
+      return await artifact_service.list_artifact_versions(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
@@ -1489,7 +1529,8 @@ class AdkWebServer:
         artifact_name: str,
         version_id: int,
     ) -> Optional[types.Part]:
-      artifact = await self.artifact_service.load_artifact(
+      artifact_service = await self._get_artifact_service_async(app_name)
+      artifact = await artifact_service.load_artifact(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
@@ -1511,8 +1552,9 @@ class AdkWebServer:
         session_id: str,
         req: SaveArtifactRequest,
     ) -> ArtifactVersion:
+      artifact_service = await self._get_artifact_service_async(app_name)
       try:
-        version = await self.artifact_service.save_artifact(
+        version = await artifact_service.save_artifact(
             app_name=app_name,
             user_id=user_id,
             session_id=session_id,
@@ -1534,7 +1576,7 @@ class AdkWebServer:
             exc_info=True,
         )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-      artifact_version = await self.artifact_service.get_artifact_version(
+      artifact_version = await artifact_service.get_artifact_version(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
@@ -1559,7 +1601,8 @@ class AdkWebServer:
         artifact_name: str,
         version_id: int,
     ) -> ArtifactVersion:
-      artifact_version = await self.artifact_service.get_artifact_version(
+      artifact_service = await self._get_artifact_service_async(app_name)
+      artifact_version = await artifact_service.get_artifact_version(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
@@ -1579,7 +1622,8 @@ class AdkWebServer:
     async def list_artifact_names(
         app_name: str, user_id: str, session_id: str
     ) -> list[str]:
-      return await self.artifact_service.list_artifact_keys(
+      artifact_service = await self._get_artifact_service_async(app_name)
+      return await artifact_service.list_artifact_keys(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
 
@@ -1590,7 +1634,8 @@ class AdkWebServer:
     async def list_artifact_versions(
         app_name: str, user_id: str, session_id: str, artifact_name: str
     ) -> list[int]:
-      return await self.artifact_service.list_versions(
+      artifact_service = await self._get_artifact_service_async(app_name)
+      return await artifact_service.list_versions(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
@@ -1603,7 +1648,8 @@ class AdkWebServer:
     async def delete_artifact(
         app_name: str, user_id: str, session_id: str, artifact_name: str
     ) -> None:
-      await self.artifact_service.delete_artifact(
+      artifact_service = await self._get_artifact_service_async(app_name)
+      await artifact_service.delete_artifact(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,

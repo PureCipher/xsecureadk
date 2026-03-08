@@ -234,6 +234,47 @@ def test_to_cloud_run_cleans_temp_dir(
   assert deleted["path"] == tmp_dir
 
 
+def test_to_cloud_run_stages_secure_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """`to_cloud_run` should stage an explicit SecureADK config into the image."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  build_dir = tmp_path / "build"
+  secure_config = tmp_path / "secure-config.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_k: None)
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      project="proj",
+      region="asia-northeast1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version=cli_deploy._SECURE_CONFIG_FLAG_MIN_VERSION,
+      secure_config=str(secure_config),
+  )
+
+  dockerfile_content = (build_dir / "Dockerfile").read_text()
+  assert (
+      "--secure_config=/app/agents/agent/.secureadk.deploy.yaml"
+      in dockerfile_content
+  )
+  staged_config = build_dir / "agents" / "agent" / ".secureadk.deploy.yaml"
+  assert staged_config.is_file()
+  assert staged_config.read_text(encoding="utf-8") == "enabled: false\n"
+
+
 def test_to_cloud_run_cleans_temp_dir_on_failure(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: AgentDirFixture,

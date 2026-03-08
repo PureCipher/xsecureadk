@@ -176,6 +176,74 @@ async def test_run_input_file_outputs(
   assert any("[assistant]:" in line for line in recorder)
 
 
+@pytest.mark.asyncio
+async def test_run_input_file_enables_secure_runtime_from_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  app_root = tmp_path / 'courtroom'
+  app_root.mkdir()
+  (app_root / 'secureadk.yaml').write_text(dedent("""
+    signing_keys:
+      judge-key:
+        secret_env: JUDGE_SECRET
+    identities:
+      - agent_name: root
+        key_id: judge-key
+        roles: [judge]
+    policy:
+      rules:
+        - name: judge-read-only
+          principals: [root]
+          tools: [dummy]
+          actions: [dummy]
+    artifact_sealing:
+      enabled: true
+      signing_key_id: judge-key
+    """))
+  monkeypatch.setenv("JUDGE_SECRET", "top-secret")
+
+  input_json = {"state": {}, "queries": ["hello"]}
+  input_path = tmp_path / "input.json"
+  input_path.write_text(json.dumps(input_json))
+
+  captured: dict[str, Any] = {}
+
+  class _CapturingRunner:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      captured.update(kwargs)
+
+    async def run_async(self, *a: Any, **k: Any):
+      yield types.SimpleNamespace(
+          author="assistant",
+          content=cli.types.Content("assistant", [cli.types.Part("ok")]),
+      )
+
+    async def close(self, *a: Any, **k: Any) -> None:
+      return None
+
+  monkeypatch.setattr(cli, "Runner", _CapturingRunner)
+
+  artifact_service = InMemoryArtifactService()
+  session_service = InMemorySessionService()
+  credential_service = InMemoryCredentialService()
+  dummy_root = BaseAgent(name="root")
+
+  await cli.run_input_file(
+      app_name="courtroom",
+      user_id="user",
+      agent_or_app=dummy_root,
+      artifact_service=artifact_service,
+      session_service=session_service,
+      credential_service=credential_service,
+      input_path=str(input_path),
+      app_root=app_root,
+  )
+
+  assert any(plugin.name == "secure_runtime" for plugin in captured["app"].plugins)
+  assert captured["artifact_service"].__class__.__name__ == "SealedArtifactService"
+
+
 # _run_cli (input_file branch)
 @pytest.mark.asyncio
 async def test_run_cli_with_input_file(fake_agent, tmp_path: Path) -> None:
@@ -423,9 +491,12 @@ async def test_run_cli_passes_memory_service_to_input_file(
       credential_service: InMemoryCredentialService,
       input_path: str,
       memory_service: Any = None,
+      app_root: Path | None = None,
+      secure_config: str | None = None,
   ) -> object:
     del app_name, user_id, agent_or_app, artifact_service
-    del session_service, credential_service, input_path
+    del session_service, credential_service, input_path, app_root
+    captured_memory_service["secure_config"] = secure_config
     captured_memory_service["value"] = memory_service
     return object()
 
@@ -445,6 +516,7 @@ async def test_run_cli_passes_memory_service_to_input_file(
 
   assert Path(captured_factory_args["base_dir"]) == parent_dir.resolve()
   assert captured_factory_args["memory_service_uri"] == "memory://"
+  assert captured_memory_service["secure_config"] is None
   assert captured_memory_service["value"] is memory_service_sentinel
 
 

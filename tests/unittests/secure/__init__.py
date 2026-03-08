@@ -13,15 +13,3 @@
 # limitations under the License.
 
 from __future__ import annotations
-
-from typing import Any
-
-
-def main(*args: Any, **kwargs: Any) -> Any:
-  """Loads the CLI entry point lazily to avoid heavy import side effects."""
-  from .cli_tools_click import main as click_main
-
-  return click_main(*args, **kwargs)
-
-
-__all__ = ['main']

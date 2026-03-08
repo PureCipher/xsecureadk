@@ -94,6 +94,7 @@ def get_fast_api_app(
     logo_text: Optional[str] = None,
     logo_image_url: Optional[str] = None,
     auto_create_session: bool = False,
+    secure_config: Optional[str] = None,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -137,6 +138,8 @@ def get_fast_api_app(
     logo_image_url: URL for an image to display in the web UI logo area.
     auto_create_session: Whether to automatically create a session when
       not found.
+    secure_config: Optional explicit SecureADK config file to apply to this
+      CLI server invocation. When unset, per-app autodiscovery remains active.
 
   Returns:
     The configured FastAPI application instance.
@@ -205,6 +208,7 @@ def get_fast_api_app(
       logo_image_url=logo_image_url,
       url_prefix=url_prefix,
       auto_create_session=auto_create_session,
+      secure_config=secure_config,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance

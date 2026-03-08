@@ -130,7 +130,10 @@ def test_cli_create_cmd_invokes_run_cmd(
 
 # cli run
 @pytest.mark.parametrize(
-    "cli_args,expected_session_uri,expected_artifact_uri,expected_memory_uri",
+    (
+        'cli_args,expected_session_uri,expected_artifact_uri,'
+        'expected_memory_uri,expected_secure_config'
+    ),
     [
         pytest.param(
             [
@@ -144,10 +147,20 @@ def test_cli_create_cmd_invokes_run_cmd(
             "memory://",
             "memory://",
             "memory://",
+            None,
             id="memory_scheme_uris",
         ),
         pytest.param(
+            ["--secure_config", "/tmp/secureadk.yaml"],
+            None,
+            None,
+            None,
+            "/tmp/secureadk.yaml",
+            id="explicit_secure_config",
+        ),
+        pytest.param(
             [],
+            None,
             None,
             None,
             None,
@@ -162,12 +175,15 @@ def test_cli_run_service_uris(
     expected_session_uri: Optional[str],
     expected_artifact_uri: Optional[str],
     expected_memory_uri: Optional[str],
+    expected_secure_config: Optional[str],
 ) -> None:
   """`adk run` should forward service URIs correctly to run_cli."""
   agent_dir = tmp_path / "agent"
   agent_dir.mkdir()
   (agent_dir / "__init__.py").touch()
   (agent_dir / "agent.py").touch()
+  if expected_secure_config is not None:
+    Path(expected_secure_config).write_text("enabled: false\n", encoding="utf-8")
 
   # Capture the coroutine's locals before closing it
   captured_locals = []
@@ -193,6 +209,12 @@ def test_cli_run_service_uris(
   assert coro_locals.get("session_service_uri") == expected_session_uri
   assert coro_locals.get("artifact_service_uri") == expected_artifact_uri
   assert coro_locals.get("memory_service_uri") == expected_memory_uri
+  if expected_secure_config is None:
+    assert coro_locals.get("secure_config") is None
+  else:
+    assert Path(coro_locals["secure_config"]) == Path(
+        expected_secure_config
+    ).resolve()
   assert coro_locals["agent_folder_name"] == "agent"
 
 
@@ -242,6 +264,34 @@ def test_cli_deploy_cloud_run_failure(
 
   assert result.exit_code == 0
   assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_cloud_run_passes_secure_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk deploy cloud_run` should forward the explicit SecureADK config."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_cloud_run"
+  agent_dir.mkdir()
+  secure_config = tmp_path / "secureadk.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--secure_config",
+          str(secure_config),
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls
+  assert rec.calls[0][1]["secure_config"] == str(secure_config)
 
 
 def test_cli_deploy_cloud_run_passthrough_args(
@@ -448,6 +498,38 @@ def test_cli_deploy_agent_engine_otel_to_cloud_success(
   assert called_kwargs.get("otel_to_cloud")
 
 
+def test_cli_deploy_agent_engine_passes_secure_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk deploy agent_engine` should forward the explicit SecureADK config."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_agent_engine", rec)
+
+  agent_dir = tmp_path / "agent_ae_secure"
+  agent_dir.mkdir()
+  secure_config = tmp_path / "secureadk.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--secure_config",
+          str(secure_config),
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls
+  assert rec.calls[0][1]["secure_config"] == str(secure_config)
+
+
 # cli deploy gke
 def test_cli_deploy_gke_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -479,6 +561,34 @@ def test_cli_deploy_gke_success(
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
   assert called_kwargs.get("cluster_name") == "my-cluster"
+
+
+def test_cli_deploy_gke_passes_secure_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk deploy gke` should forward the explicit SecureADK config."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_gke", rec)
+
+  agent_dir = tmp_path / "agent_gke_secure"
+  agent_dir.mkdir()
+  secure_config = tmp_path / "secureadk.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "gke",
+          "--secure_config",
+          str(secure_config),
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls
+  assert rec.calls[0][1]["secure_config"] == str(secure_config)
 
 
 # cli eval
@@ -594,6 +704,50 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("session_service_uri") == "sqlite:///test.db"
   assert called_kwargs.get("artifact_service_uri") == "gs://mybucket"
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
+
+
+def test_cli_web_passes_secure_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
+) -> None:
+  """`adk web` should forward the explicit SecureADK config path."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  secure_config = tmp_path / "secureadk.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+
+  mock_get_app = _Recorder()
+  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["web", str(agents_dir), "--secure_config", str(secure_config)],
+  )
+
+  assert result.exit_code == 0
+  called_kwargs = mock_get_app.calls[0][1]
+  assert called_kwargs.get("secure_config") == str(secure_config)
+
+
+def test_cli_api_server_passes_secure_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
+) -> None:
+  """`adk api_server` should forward the explicit SecureADK config path."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  secure_config = tmp_path / "secureadk.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+
+  mock_get_app = _Recorder()
+  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["api_server", str(agents_dir), "--secure_config", str(secure_config)],
+  )
+
+  assert result.exit_code == 0
+  called_kwargs = mock_get_app.calls[0][1]
+  assert called_kwargs.get("secure_config") == str(secure_config)
 
 
 @pytest.mark.unmute_click

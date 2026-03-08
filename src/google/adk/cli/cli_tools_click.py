@@ -573,8 +573,33 @@ def adk_services_options(*, default_use_local_storage: bool = True):
   return decorator
 
 
+def secure_runtime_options():
+  """Decorator to add SecureADK CLI config options."""
+
+  def decorator(func):
+    @click.option(
+        "--secure_config",
+        type=click.Path(
+            exists=True, dir_okay=False, file_okay=True, resolve_path=True
+        ),
+        help=(
+            "Optional. Path to a SecureADK config file. When set, it overrides"
+            " per-app SecureADK config autodiscovery for this command."
+        ),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 @main.command("run", cls=HelpfulCommand)
 @feature_options()
+@secure_runtime_options()
 @adk_services_options(default_use_local_storage=True)
 @click.option(
     "--save_session",
@@ -633,6 +658,7 @@ def cli_run(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    secure_config: Optional[str] = None,
     use_local_storage: bool = True,
 ):
   """Runs an interactive CLI for a certain agent.
@@ -659,6 +685,7 @@ def cli_run(
           session_service_uri=session_service_uri,
           artifact_service_uri=artifact_service_uri,
           memory_service_uri=memory_service_uri,
+          secure_config=secure_config,
           use_local_storage=use_local_storage,
       )
   )
@@ -1297,6 +1324,7 @@ def fast_api_common_options():
 
 @main.command("web")
 @feature_options()
+@secure_runtime_options()
 @fast_api_common_options()
 @web_options()
 @adk_services_options(default_use_local_storage=True)
@@ -1322,6 +1350,7 @@ def cli_web(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    secure_config: Optional[str] = None,
     use_local_storage: bool = True,
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
@@ -1386,6 +1415,7 @@ def cli_web(
       extra_plugins=extra_plugins,
       logo_text=logo_text,
       logo_image_url=logo_image_url,
+      secure_config=secure_config,
   )
   config = uvicorn.Config(
       app,
@@ -1400,6 +1430,7 @@ def cli_web(
 
 @main.command("api_server")
 @feature_options()
+@secure_runtime_options()
 # The directory of agents, where each subdirectory is a single agent.
 # By default, it is the current working directory
 @click.argument(
@@ -1434,6 +1465,7 @@ def cli_api_server(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    secure_config: Optional[str] = None,
     use_local_storage: bool = True,
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
@@ -1474,6 +1506,7 @@ def cli_api_server(
           reload_agents=reload_agents,
           extra_plugins=extra_plugins,
           auto_create_session=auto_create_session,
+          secure_config=secure_config,
       ),
       host=host,
       port=port,
@@ -1617,6 +1650,7 @@ def cli_api_server(
     multiple=True,
 )
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
+@secure_runtime_options()
 @adk_services_options(default_use_local_storage=False)
 @deprecated_adk_services_options()
 @click.pass_context
@@ -1636,6 +1670,7 @@ def cli_deploy_cloud_run(
     log_level: str,
     verbosity: Optional[str],
     allow_origins: Optional[list[str]] = None,
+    secure_config: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
@@ -1718,6 +1753,7 @@ def cli_deploy_cloud_run(
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
+        secure_config=secure_config,
         use_local_storage=use_local_storage,
         a2a=a2a,
         extra_gcloud_args=tuple(gcloud_args),
@@ -1936,6 +1972,7 @@ def cli_migrate_session(
         " the default; use --validate-agent-import to enable validation."
     ),
 )
+@secure_runtime_options()
 @click.argument(
     "agent",
     type=click.Path(
@@ -1959,6 +1996,7 @@ def cli_deploy_agent_engine(
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
+    secure_config: Optional[str],
     agent_engine_config_file: str,
     validate_agent_import: bool = False,
     skip_agent_import_validation_alias: bool = False,
@@ -1999,6 +2037,7 @@ def cli_deploy_agent_engine(
         env_file=env_file,
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
+        secure_config=secure_config,
         agent_engine_config_file=agent_engine_config_file,
         skip_agent_import_validation=not validate_agent_import,
     )
@@ -2105,6 +2144,7 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
+@secure_runtime_options()
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2126,6 +2166,7 @@ def cli_deploy_gke(
     with_ui: bool,
     adk_version: str,
     log_level: Optional[str] = None,
+    secure_config: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
@@ -2156,6 +2197,7 @@ def cli_deploy_gke(
         with_ui=with_ui,
         log_level=log_level,
         adk_version=adk_version,
+        secure_config=secure_config,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,

@@ -37,6 +37,8 @@ from ..utils.env_utils import is_env_enabled
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_loader import AgentLoader
+from .utils.secure_runtime_config import apply_secure_runtime_if_configured
+from .utils.secure_runtime_config import resolve_loaded_app_root
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
@@ -56,11 +58,22 @@ async def run_input_file(
     credential_service: BaseCredentialService,
     input_path: str,
     memory_service: Optional[BaseMemoryService] = None,
+    app_root: Optional[Path] = None,
+    secure_config: Optional[str] = None,
 ) -> Session:
   app = (
       agent_or_app
       if isinstance(agent_or_app, App)
       else App(name=app_name, root_agent=agent_or_app)
+  )
+  app, artifact_service = apply_secure_runtime_if_configured(
+      app=app,
+      artifact_service=artifact_service,
+      app_root=(
+          app_root
+          or resolve_loaded_app_root(agent_or_app, fallback_root=app_root)
+      ),
+      secure_config_path=secure_config,
   )
   runner = Runner(
       app=app,
@@ -98,11 +111,22 @@ async def run_interactively(
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
     memory_service: Optional[BaseMemoryService] = None,
+    app_root: Optional[Path] = None,
+    secure_config: Optional[str] = None,
 ) -> None:
   app = (
       root_agent_or_app
       if isinstance(root_agent_or_app, App)
       else App(name=session.app_name, root_agent=root_agent_or_app)
+  )
+  app, artifact_service = apply_secure_runtime_if_configured(
+      app=app,
+      artifact_service=artifact_service,
+      app_root=(
+          app_root
+          or resolve_loaded_app_root(root_agent_or_app, fallback_root=app_root)
+      ),
+      secure_config_path=secure_config,
   )
   runner = Runner(
       app=app,
@@ -144,6 +168,7 @@ async def run_cli(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    secure_config: Optional[str] = None,
     use_local_storage: bool = True,
 ) -> None:
   """Runs an interactive CLI for a certain agent.
@@ -224,6 +249,8 @@ async def run_cli(
         memory_service=memory_service,
         credential_service=credential_service,
         input_path=input_file,
+        app_root=agent_root,
+        secure_config=secure_config,
     )
   elif saved_session_file:
     # Load the saved session from file
@@ -250,6 +277,8 @@ async def run_cli(
         session_service,
         credential_service,
         memory_service=memory_service,
+        app_root=agent_root,
+        secure_config=secure_config,
     )
   else:
     session = await session_service.create_session(
@@ -263,6 +292,8 @@ async def run_cli(
         session_service,
         credential_service,
         memory_service=memory_service,
+        app_root=agent_root,
+        secure_config=secure_config,
     )
 
   if save_session:
