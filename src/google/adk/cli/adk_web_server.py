@@ -98,7 +98,7 @@ from .utils import common
 from .utils import envs
 from .utils import evals
 from .utils.base_agent_loader import BaseAgentLoader
-from .utils.secure_runtime_config import apply_secure_runtime_if_configured
+from .utils.secure_runtime_config import apply_secure_runtime_services_if_configured
 from .utils.secure_runtime_config import resolve_loaded_app_root
 from .utils.shared_value import SharedValue
 from .utils.state import create_empty_state
@@ -519,6 +519,8 @@ class AdkWebServer:
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
     self.app_artifact_service_dict: dict[str, BaseArtifactService] = {}
+    self.app_session_service_dict: dict[str, BaseSessionService] = {}
+    self.app_secure_runtime_builder_dict: dict[str, object] = {}
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.secure_config = secure_config
@@ -530,6 +532,8 @@ class AdkWebServer:
       self.runners_to_clean.remove(app_name)
       runner = self.runner_dict.pop(app_name, None)
       self.app_artifact_service_dict.pop(app_name, None)
+      self.app_session_service_dict.pop(app_name, None)
+      self.app_secure_runtime_builder_dict.pop(app_name, None)
       await cleanup.close_runners(list([runner]))
 
     # Return cached runner if exists
@@ -558,19 +562,25 @@ class AdkWebServer:
       agent_or_app.plugins = agent_or_app.plugins + extra_plugins_instances
       agentic_app = agent_or_app
 
-    agentic_app, artifact_service = apply_secure_runtime_if_configured(
+    secured = apply_secure_runtime_services_if_configured(
         app=agentic_app,
         artifact_service=self.artifact_service,
+        session_service=self.session_service,
         app_root=app_root,
         secure_config_path=self.secure_config,
     )
-
-    runner_artifact_service = artifact_service or self.artifact_service
+    runner_artifact_service = secured.artifact_service or self.artifact_service
+    runner_session_service = secured.session_service or self.session_service
     runner = self._create_runner(
-        agentic_app, artifact_service=runner_artifact_service
+        secured.app,
+        artifact_service=runner_artifact_service,
+        session_service=runner_session_service,
     )
     self.runner_dict[app_name] = runner
     self.app_artifact_service_dict[app_name] = runner_artifact_service
+    self.app_session_service_dict[app_name] = runner_session_service
+    if secured.builder is not None:
+      self.app_secure_runtime_builder_dict[app_name] = secured.builder
     return runner
 
   def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
@@ -584,12 +594,13 @@ class AdkWebServer:
       agentic_app: App,
       *,
       artifact_service: Optional[BaseArtifactService] = None,
+      session_service: Optional[BaseSessionService] = None,
   ) -> Runner:
     """Create a runner with common services."""
     return Runner(
         app=agentic_app,
         artifact_service=artifact_service or self.artifact_service,
-        session_service=self.session_service,
+        session_service=session_service or self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
         auto_create_session=self.auto_create_session,
@@ -605,6 +616,17 @@ class AdkWebServer:
 
     await self.get_runner_async(app_name)
     return self.app_artifact_service_dict.get(app_name, self.artifact_service)
+
+  async def _get_session_service_async(
+      self, app_name: str
+  ) -> BaseSessionService:
+    """Returns the configured session service for an app."""
+    session_service = self.app_session_service_dict.get(app_name)
+    if session_service is not None:
+      return session_service
+
+    await self.get_runner_async(app_name)
+    return self.app_session_service_dict.get(app_name, self.session_service)
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:
     """Instantiate extra plugins from the configured list.
@@ -698,7 +720,8 @@ class AdkWebServer:
       state: Optional[dict[str, Any]] = None,
   ) -> Session:
     try:
-      session = await self.session_service.create_session(
+      session_service = await self._get_session_service_async(app_name)
+      session = await session_service.create_session(
           app_name=app_name,
           user_id=user_id,
           state=state,
@@ -951,7 +974,8 @@ class AdkWebServer:
     async def get_session(
         app_name: str, user_id: str, session_id: str
     ) -> Session:
-      session = await self.session_service.get_session(
+      session_service = await self._get_session_service_async(app_name)
+      session = await session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       if not session:
@@ -964,7 +988,8 @@ class AdkWebServer:
         response_model_exclude_none=True,
     )
     async def list_sessions(app_name: str, user_id: str) -> list[Session]:
-      list_sessions_response = await self.session_service.list_sessions(
+      session_service = await self._get_session_service_async(app_name)
+      list_sessions_response = await session_service.list_sessions(
           app_name=app_name, user_id=user_id
       )
       return [
@@ -1015,8 +1040,9 @@ class AdkWebServer:
       )
 
       if req.events:
+        session_service = await self._get_session_service_async(app_name)
         for event in req.events:
-          await self.session_service.append_event(session=session, event=event)
+          await session_service.append_event(session=session, event=event)
 
       return session
 
@@ -1024,7 +1050,8 @@ class AdkWebServer:
     async def delete_session(
         app_name: str, user_id: str, session_id: str
     ) -> None:
-      await self.session_service.delete_session(
+      session_service = await self._get_session_service_async(app_name)
+      await session_service.delete_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
 
@@ -1052,7 +1079,8 @@ class AdkWebServer:
       Raises:
           HTTPException: If the session is not found.
       """
-      session = await self.session_service.get_session(
+      session_service = await self._get_session_service_async(app_name)
+      session = await session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       if not session:
@@ -1072,7 +1100,7 @@ class AdkWebServer:
 
       # Append the event to the session
       # This will automatically update the session state through __update_session_state
-      await self.session_service.append_event(
+      await session_service.append_event(
           session=session, event=state_update_event
       )
 
@@ -1216,7 +1244,8 @@ class AdkWebServer:
         app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
     ):
       # Get the session
-      session = await self.session_service.get_session(
+      session_service = await self._get_session_service_async(app_name)
+      session = await session_service.get_session(
           app_name=app_name, user_id=req.user_id, session_id=req.session_id
       )
       assert session, "Session not found."
@@ -1381,8 +1410,15 @@ class AdkWebServer:
             root_agent=eval_subject,
             eval_sets_manager=self.eval_sets_manager,
             eval_set_results_manager=self.eval_set_results_manager,
-            session_service=self.session_service,
+            session_service=await self._get_session_service_async(app_name),
             artifact_service=runner.artifact_service,
+            trusted_evaluator_service=(
+                getattr(
+                    self.app_secure_runtime_builder_dict.get(app_name),
+                    "trusted_evaluator_service",
+                    None,
+                )
+            ),
         )
         inference_request = InferenceRequest(
             app_name=app_name,
@@ -1683,7 +1719,8 @@ class AdkWebServer:
             status_code=400, detail="Update memory request is invalid."
         )
 
-      session = await self.session_service.get_session(
+      session_service = await self._get_session_service_async(app_name)
+      session = await session_service.get_session(
           app_name=app_name,
           user_id=user_id,
           session_id=update_memory_request.session_id,
@@ -1724,7 +1761,8 @@ class AdkWebServer:
       # handler vs StreamingResponse) breaks OpenTelemetry context
       # detachment.
       if not runner.auto_create_session:
-        session = await self.session_service.get_session(
+        session_service = await self._get_session_service_async(req.app_name)
+        session = await session_service.get_session(
             app_name=req.app_name,
             user_id=req.user_id,
             session_id=req.session_id,
@@ -1793,7 +1831,8 @@ class AdkWebServer:
     async def get_event_graph(
         app_name: str, user_id: str, session_id: str, event_id: str
     ):
-      session = await self.session_service.get_session(
+      session_service = await self._get_session_service_async(app_name)
+      session = await session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       session_events = session.events if session else []
@@ -1850,7 +1889,8 @@ class AdkWebServer:
     ) -> None:
       await websocket.accept()
 
-      session = await self.session_service.get_session(
+      session_service = await self._get_session_service_async(app_name)
+      session = await session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       if not session:

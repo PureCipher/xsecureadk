@@ -216,6 +216,7 @@ known_third_party = ["google.adk"]
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "auto"
+markers = ["unmute_click: allow click output in CLI tests"]
 
 
 [tool.mypy]

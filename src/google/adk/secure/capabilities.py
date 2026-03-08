@@ -16,13 +16,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from google.adk.platform import time as platform_time
-from google.adk.platform import uuid as platform_uuid
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
 from ..agents.context import Context
+from ..platform import time as platform_time
+from ..platform import uuid as platform_uuid
 from ..sessions.state import State
 from .policies import AuthorizationRequest
 from .policies import BasePolicyEngine
@@ -153,6 +153,7 @@ class CapabilityVault:
         self._token_payload(token),
         key_id=token.key_id,
         signature=token.signature,
+        signed_at=token.issued_at,
     ):
       return CapabilityValidationResult(
           valid=False,

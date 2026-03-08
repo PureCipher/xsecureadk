@@ -35,7 +35,10 @@ _EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
 class LocalEvalSetResultsManager(EvalSetResultsManager):
   """An EvalSetResult manager that stores eval set results locally on disk."""
 
-  def __init__(self, agents_dir: str):
+  def __init__(
+      self,
+      agents_dir: str,
+  ):
     self._agents_dir = agents_dir
 
   @override
@@ -49,6 +52,18 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     eval_set_result = create_eval_set_result(
         app_name, eval_set_id, eval_case_results
     )
+    self.save_prebuilt_eval_set_result(
+        app_name=app_name,
+        eval_set_result=eval_set_result,
+    )
+
+  def save_prebuilt_eval_set_result(
+      self,
+      *,
+      app_name: str,
+      eval_set_result: EvalSetResult,
+  ) -> None:
+    """Writes a prebuilt EvalSetResult to disk."""
     # Write eval result file, with eval_set_result_name.
     app_eval_history_dir = self._get_eval_history_dir(app_name)
     if not os.path.exists(app_eval_history_dir):

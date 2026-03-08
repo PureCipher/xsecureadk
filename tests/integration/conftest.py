@@ -19,6 +19,7 @@ import warnings
 
 from dotenv import load_dotenv
 from google.adk import Agent
+import pytest
 from pytest import fixture
 from pytest import FixtureRequest
 from pytest import hookimpl
@@ -77,6 +78,23 @@ def llm_backend(request: FixtureRequest):
   # Set backend environment value.
   original_val = os.environ.get('GOOGLE_GENAI_USE_VERTEXAI')
   backend_type = request.param
+  if backend_type == 'GOOGLE_AI':
+    if 'GOOGLE_API_KEY' not in os.environ:
+      pytest.skip(
+          'Skipping GOOGLE_AI integration test because GOOGLE_API_KEY is'
+          ' not configured.'
+      )
+  else:
+    missing_vertex_vars = [
+        env_var
+        for env_var in ['GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION']
+        if env_var not in os.environ
+    ]
+    if missing_vertex_vars:
+      pytest.skip(
+          'Skipping VERTEX integration test because required environment'
+          f' variables are missing: {", ".join(missing_vertex_vars)}.'
+      )
   if backend_type == 'GOOGLE_AI':
     os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = '0'
   else:

@@ -50,6 +50,11 @@ from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to
 from google.adk.evaluation.local_eval_service import LocalEvalService
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.models.registry import LLMRegistry
+from google.adk.secure.signing import HmacKeyring
+from google.adk.secure.trusted_evaluators import TRUSTED_EVALUATOR_METADATA_KEY
+from google.adk.secure.trusted_evaluators import TrustedEvaluatorIdentity
+from google.adk.secure.trusted_evaluators import TrustedEvaluatorRegistry
+from google.adk.secure.trusted_evaluators import TrustedEvaluatorService
 from google.genai import types as genai_types
 import pytest
 from typing_extensions import override
@@ -254,6 +259,44 @@ async def test_perform_inference_with_case_ids(
       eval_case=eval_set.eval_cases[2],
       root_agent=dummy_agent,
   )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_signs_result(
+    dummy_agent,
+    mock_eval_sets_manager,
+    mocker,
+):
+  trusted_evaluator_service = TrustedEvaluatorService(
+      evaluator_name="court-evaluator",
+      key_id="eval-key",
+      keyring=HmacKeyring({"eval-key": "secret"}),
+      registry=TrustedEvaluatorRegistry([
+          TrustedEvaluatorIdentity(
+              evaluator_name="court-evaluator",
+              key_id="eval-key",
+          )
+      ]),
+  )
+  eval_service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      trusted_evaluator_service=trusted_evaluator_service,
+  )
+  mocker.patch(
+      "google.adk.evaluation.local_eval_service."
+      "EvaluationGenerator._generate_inferences_from_root_agent",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  inference_result = await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=EvalCase(eval_id="case1", conversation=[], session_input=None),
+      root_agent=dummy_agent,
+  )
+
+  assert TRUSTED_EVALUATOR_METADATA_KEY in inference_result.custom_metadata
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import inspect
 from pathlib import Path
 from typing import Optional
 from typing import Union
@@ -37,7 +38,7 @@ from ..utils.env_utils import is_env_enabled
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_loader import AgentLoader
-from .utils.secure_runtime_config import apply_secure_runtime_if_configured
+from .utils.secure_runtime_config import apply_secure_runtime_services_if_configured
 from .utils.secure_runtime_config import resolve_loaded_app_root
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
@@ -60,21 +61,27 @@ async def run_input_file(
     memory_service: Optional[BaseMemoryService] = None,
     app_root: Optional[Path] = None,
     secure_config: Optional[str] = None,
+    secure_runtime_applied: bool = False,
 ) -> Session:
   app = (
       agent_or_app
       if isinstance(agent_or_app, App)
       else App(name=app_name, root_agent=agent_or_app)
   )
-  app, artifact_service = apply_secure_runtime_if_configured(
-      app=app,
-      artifact_service=artifact_service,
-      app_root=(
-          app_root
-          or resolve_loaded_app_root(agent_or_app, fallback_root=app_root)
-      ),
-      secure_config_path=secure_config,
-  )
+  if not secure_runtime_applied:
+    secured = apply_secure_runtime_services_if_configured(
+        app=app,
+        artifact_service=artifact_service,
+        session_service=session_service,
+        app_root=(
+            app_root
+            or resolve_loaded_app_root(agent_or_app, fallback_root=app_root)
+        ),
+        secure_config_path=secure_config,
+    )
+    app = secured.app
+    artifact_service = secured.artifact_service or artifact_service
+    session_service = secured.session_service or session_service
   runner = Runner(
       app=app,
       artifact_service=artifact_service,
@@ -113,21 +120,29 @@ async def run_interactively(
     memory_service: Optional[BaseMemoryService] = None,
     app_root: Optional[Path] = None,
     secure_config: Optional[str] = None,
+    secure_runtime_applied: bool = False,
 ) -> None:
   app = (
       root_agent_or_app
       if isinstance(root_agent_or_app, App)
       else App(name=session.app_name, root_agent=root_agent_or_app)
   )
-  app, artifact_service = apply_secure_runtime_if_configured(
-      app=app,
-      artifact_service=artifact_service,
-      app_root=(
-          app_root
-          or resolve_loaded_app_root(root_agent_or_app, fallback_root=app_root)
-      ),
-      secure_config_path=secure_config,
-  )
+  if not secure_runtime_applied:
+    secured = apply_secure_runtime_services_if_configured(
+        app=app,
+        artifact_service=artifact_service,
+        session_service=session_service,
+        app_root=(
+            app_root
+            or resolve_loaded_app_root(
+                root_agent_or_app, fallback_root=app_root
+            )
+        ),
+        secure_config_path=secure_config,
+    )
+    app = secured.app
+    artifact_service = secured.artifact_service or artifact_service
+    session_service = secured.session_service or session_service
   runner = Runner(
       app=app,
       artifact_service=artifact_service,
@@ -227,6 +242,23 @@ async def run_cli(
   )
 
   credential_service = InMemoryCredentialService()
+  secure_app = (
+      agent_or_app
+      if isinstance(agent_or_app, App)
+      else App(name=session_app_name, root_agent=agent_or_app)
+  )
+  secured = apply_secure_runtime_services_if_configured(
+      app=secure_app,
+      artifact_service=artifact_service,
+      session_service=session_service,
+      app_root=agent_root,
+      secure_config_path=secure_config,
+  )
+  secure_agent_or_app = (
+      secured.app if isinstance(agent_or_app, App) else secured.app.root_agent
+  )
+  artifact_service = secured.artifact_service or artifact_service
+  session_service = secured.session_service or session_service
 
   # Helper function for printing events
   def _print_event(event) -> None:
@@ -240,18 +272,21 @@ async def run_cli(
     click.echo(f'[{author}]: {"".join(text_parts)}')
 
   if input_file:
-    session = await run_input_file(
-        app_name=session_app_name,
-        user_id=user_id,
-        agent_or_app=agent_or_app,
-        artifact_service=artifact_service,
-        session_service=session_service,
-        memory_service=memory_service,
-        credential_service=credential_service,
-        input_path=input_file,
-        app_root=agent_root,
-        secure_config=secure_config,
-    )
+    run_input_file_kwargs = {
+        'app_name': session_app_name,
+        'user_id': user_id,
+        'agent_or_app': secure_agent_or_app,
+        'artifact_service': artifact_service,
+        'session_service': session_service,
+        'memory_service': memory_service,
+        'credential_service': credential_service,
+        'input_path': input_file,
+        'app_root': agent_root,
+        'secure_config': secure_config,
+    }
+    if 'secure_runtime_applied' in inspect.signature(run_input_file).parameters:
+      run_input_file_kwargs['secure_runtime_applied'] = True
+    session = await run_input_file(**run_input_file_kwargs)
   elif saved_session_file:
     # Load the saved session from file
     with open(saved_session_file, 'r', encoding='utf-8') as f:
@@ -270,31 +305,43 @@ async def run_cli(
         await session_service.append_event(session, event)
         _print_event(event)
 
-    await run_interactively(
-        agent_or_app,
-        artifact_service,
-        session,
-        session_service,
-        credential_service,
-        memory_service=memory_service,
-        app_root=agent_root,
-        secure_config=secure_config,
-    )
+    run_interactively_kwargs = {
+        'root_agent_or_app': secure_agent_or_app,
+        'artifact_service': artifact_service,
+        'session': session,
+        'session_service': session_service,
+        'credential_service': credential_service,
+        'memory_service': memory_service,
+        'app_root': agent_root,
+        'secure_config': secure_config,
+    }
+    if (
+        'secure_runtime_applied'
+        in inspect.signature(run_interactively).parameters
+    ):
+      run_interactively_kwargs['secure_runtime_applied'] = True
+    await run_interactively(**run_interactively_kwargs)
   else:
     session = await session_service.create_session(
         app_name=session_app_name, user_id=user_id
     )
     click.echo(f'Running agent {agent_or_app.name}, type exit to exit.')
-    await run_interactively(
-        agent_or_app,
-        artifact_service,
-        session,
-        session_service,
-        credential_service,
-        memory_service=memory_service,
-        app_root=agent_root,
-        secure_config=secure_config,
-    )
+    run_interactively_kwargs = {
+        'root_agent_or_app': secure_agent_or_app,
+        'artifact_service': artifact_service,
+        'session': session,
+        'session_service': session_service,
+        'credential_service': credential_service,
+        'memory_service': memory_service,
+        'app_root': agent_root,
+        'secure_config': secure_config,
+    }
+    if (
+        'secure_runtime_applied'
+        in inspect.signature(run_interactively).parameters
+    ):
+      run_interactively_kwargs['secure_runtime_applied'] = True
+    await run_interactively(**run_interactively_kwargs)
 
   if save_session:
     session_id = session_id or input('Session ID to save: ')

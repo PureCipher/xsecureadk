@@ -34,6 +34,7 @@ import uvicorn
 
 from . import cli_create
 from . import cli_deploy
+from . import cli_secure
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..features import FeatureName
@@ -222,6 +223,12 @@ def conformance():
   pass
 
 
+@main.group()
+def secure():
+  """SecureADK audit and verification tools."""
+  pass
+
+
 @conformance.command("record", cls=HelpfulCommand)
 @click.argument(
     "paths",
@@ -405,6 +412,332 @@ def cli_conformance_test(
           report_dir=report_dir,
       )
   )
+
+
+@secure.command("verify-eval", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.argument(
+    "eval_result_file",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for verification.",
+)
+def cli_secure_verify_eval(
+    app_root: str,
+    eval_result_file: str,
+    secure_config: Optional[str] = None,
+) -> None:
+  """Verify signed SecureADK eval results from a persisted eval JSON file."""
+  try:
+    report = cli_secure.verify_eval_result_file(
+        app_root=app_root,
+        eval_result_path=eval_result_file,
+        secure_config_path=secure_config,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+  if not report.valid:
+    raise click.exceptions.Exit(1)
+
+
+@secure.command("verify-lineage", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for verification.",
+)
+@click.option(
+    "--lineage_path",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit lineage JSONL file to verify.",
+)
+def cli_secure_verify_lineage(
+    app_root: str,
+    secure_config: Optional[str] = None,
+    lineage_path: Optional[str] = None,
+) -> None:
+  """Verify SecureADK lineage records and parent linkage integrity."""
+  try:
+    report = cli_secure.verify_lineage(
+        app_root=app_root,
+        secure_config_path=secure_config,
+        lineage_path=lineage_path,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+  if not report.valid:
+    raise click.exceptions.Exit(1)
+
+
+@secure.command("replay-ledger", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for ledger replay.",
+)
+@click.option(
+    "--ledger_path",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit ledger JSONL file to replay.",
+)
+@click.option("--app_name", type=str, help="Optional. Filter by app name.")
+@click.option("--user_id", type=str, help="Optional. Filter by user id.")
+@click.option("--session_id", type=str, help="Optional. Filter by session id.")
+@click.option(
+    "--invocation_id", type=str, help="Optional. Filter by invocation id."
+)
+@click.option("--event_type", type=str, help="Optional. Filter by event type.")
+@click.option(
+    "--show_entries/--summary_only",
+    default=False,
+    help="Optional. Include matching ledger entries in the JSON output.",
+)
+def cli_secure_replay_ledger(
+    app_root: str,
+    secure_config: Optional[str] = None,
+    ledger_path: Optional[str] = None,
+    app_name: Optional[str] = None,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    invocation_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    show_entries: bool = False,
+) -> None:
+  """Replay SecureADK provenance ledger history with optional filters."""
+  try:
+    report = cli_secure.replay_ledger(
+        app_root=app_root,
+        secure_config_path=secure_config,
+        ledger_path=ledger_path,
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        invocation_id=invocation_id,
+        event_type=event_type,
+        include_entries=show_entries,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+  if not report.valid:
+    raise click.exceptions.Exit(1)
+
+
+@secure.command("explain-policy", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.argument(
+    "request_file",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for explanation.",
+)
+def cli_secure_explain_policy(
+    app_root: str,
+    request_file: str,
+    secure_config: Optional[str] = None,
+) -> None:
+  """Explain a SecureADK policy decision from an AuthorizationRequest JSON."""
+  try:
+    explanation = cli_secure.explain_policy_request(
+        app_root=app_root,
+        request_path=request_file,
+        secure_config_path=secure_config,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(explanation.model_dump_json(indent=2, exclude_none=True))
+
+
+@secure.command("explain-gateway", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.argument(
+    "request_file",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for explanation.",
+)
+def cli_secure_explain_gateway(
+    app_root: str,
+    request_file: str,
+    secure_config: Optional[str] = None,
+) -> None:
+  """Explain a SecureADK gateway decision from a GatewayRequest JSON."""
+  try:
+    explanation = cli_secure.explain_gateway_request(
+        app_root=app_root,
+        request_path=request_file,
+        secure_config_path=secure_config,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(explanation.model_dump_json(indent=2, exclude_none=True))
+
+
+@secure.command("export-invocation-bundle", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.argument("invocation_id", type=str)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for export.",
+)
+@click.option("--app_name", type=str, help="Optional. Filter by app name.")
+@click.option("--session_id", type=str, help="Optional. Filter by session id.")
+@click.option(
+    "--output_path",
+    type=click.Path(dir_okay=False, resolve_path=True),
+    help="Optional. Write the evidence bundle to this JSON file.",
+)
+def cli_secure_export_invocation_bundle(
+    app_root: str,
+    invocation_id: str,
+    secure_config: Optional[str] = None,
+    app_name: Optional[str] = None,
+    session_id: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> None:
+  """Export a signed evidence bundle for a SecureADK invocation."""
+  try:
+    bundle = cli_secure.export_invocation_bundle(
+        app_root=app_root,
+        invocation_id=invocation_id,
+        secure_config_path=secure_config,
+        app_name=app_name,
+        session_id=session_id,
+        output_path=output_path,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(bundle.model_dump_json(indent=2, exclude_none=True))
+
+
+@secure.command("export-eval-bundle", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.argument(
+    "eval_result_file",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for export.",
+)
+@click.option("--app_name", type=str, help="Optional. Override app name.")
+@click.option(
+    "--output_path",
+    type=click.Path(dir_okay=False, resolve_path=True),
+    help="Optional. Write the evidence bundle to this JSON file.",
+)
+def cli_secure_export_eval_bundle(
+    app_root: str,
+    eval_result_file: str,
+    secure_config: Optional[str] = None,
+    app_name: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> None:
+  """Export a signed evidence bundle for a persisted SecureADK eval result."""
+  try:
+    bundle = cli_secure.export_eval_bundle(
+        app_root=app_root,
+        eval_result_path=eval_result_file,
+        secure_config_path=secure_config,
+        app_name=app_name,
+        output_path=output_path,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(bundle.model_dump_json(indent=2, exclude_none=True))
+
+
+@secure.command("verify-bundle", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.argument(
+    "bundle_file",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for verification.",
+)
+def cli_secure_verify_bundle(
+    app_root: str,
+    bundle_file: str,
+    secure_config: Optional[str] = None,
+) -> None:
+  """Verify a signed SecureADK evidence bundle file."""
+  try:
+    report = cli_secure.verify_bundle_file(
+        app_root=app_root,
+        bundle_path=bundle_file,
+        secure_config_path=secure_config,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+  if not report.valid:
+    raise click.exceptions.Exit(1)
 
 
 @main.command("create", cls=HelpfulCommand)
@@ -823,13 +1156,14 @@ def cli_eval(
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
+    from ..sessions.in_memory_session_service import InMemorySessionService
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
     from .cli_eval import get_agent_or_app
     from .cli_eval import get_default_metric_info
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
-    from .utils.secure_runtime_config import apply_secure_runtime_if_configured
+    from .utils.secure_runtime_config import apply_secure_runtime_services_if_configured
     from .utils.secure_runtime_config import resolve_loaded_app_root
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
@@ -844,19 +1178,24 @@ def cli_eval(
   eval_sets_manager = None
   eval_set_results_manager = None
   artifact_service = InMemoryArtifactService()
+  session_service = InMemorySessionService()
   eval_app = (
       agent_or_app
       if isinstance(agent_or_app, App)
       else App(name=app_name, root_agent=agent_or_app)
   )
-  eval_app, artifact_service = apply_secure_runtime_if_configured(
+  secured = apply_secure_runtime_services_if_configured(
       app=eval_app,
       artifact_service=artifact_service,
+      session_service=session_service,
       app_root=resolve_loaded_app_root(
           agent_or_app, fallback_root=agent_module_file_path
       ),
       secure_config_path=secure_config,
   )
+  eval_app = secured.app
+  artifact_service = secured.artifact_service or artifact_service
+  session_service = secured.session_service or session_service
 
   if eval_storage_uri:
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
@@ -956,9 +1295,15 @@ def cli_eval(
         root_agent=eval_app,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
+        session_service=session_service,
         user_simulator_provider=user_simulator_provider,
         metric_evaluator_registry=metric_evaluator_registry,
         artifact_service=artifact_service,
+        trusted_evaluator_service=(
+            secured.builder.trusted_evaluator_service
+            if secured.builder is not None
+            else None
+        ),
     )
 
     inference_results = asyncio.run(

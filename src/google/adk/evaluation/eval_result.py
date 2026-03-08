@@ -76,6 +76,9 @@ class EvalCaseResult(BaseModel):
   user_id: Optional[str] = None
   """User id used during inferencing/scraping stage of the eval."""
 
+  custom_metadata: dict[str, object] = Field(default_factory=dict)
+  """Optional metadata for trusted evaluator signatures and lineage."""
+
 
 class EvalSetResult(BaseModel):
   """Eval set level evaluation results."""
@@ -89,3 +92,4 @@ class EvalSetResult(BaseModel):
   eval_set_id: str
   eval_case_results: list[EvalCaseResult] = Field(default_factory=list)
   creation_timestamp: float = 0.0
+  custom_metadata: dict[str, object] = Field(default_factory=dict)

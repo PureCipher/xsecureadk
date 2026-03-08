@@ -18,13 +18,17 @@ import asyncio
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.secure import AgentIdentity
 from google.adk.secure import capability_state_key
 from google.adk.secure import CapabilityVault
 from google.adk.secure import IdentityRegistry
+from google.adk.secure import InMemoryAnomalyAlertSink
 from google.adk.secure import InMemoryProvenanceLedger
 from google.adk.secure import PolicyRule
+from google.adk.secure import RuleBasedAnomalyDetector
 from google.adk.secure import SealedArtifactService
 from google.adk.secure import SECURE_METADATA_KEY
 from google.adk.secure import SecureRuntimeBuilder
@@ -41,6 +45,7 @@ from tests.unittests import testing_utils
 def _build_secure_plugin(
     *,
     allow_tool: bool,
+    requires_approval: bool = False,
 ) -> tuple[SecureRuntimePlugin, InMemoryProvenanceLedger]:
   ledger = InMemoryProvenanceLedger()
   keyring = HmacKeyring({'judge-key': 'judge-secret'})
@@ -52,6 +57,7 @@ def _build_secure_plugin(
             principals=('judge',),
             tools=('sealed_evidence',),
             actions=('sealed_evidence',),
+            requires_approval=requires_approval,
         )
     )
   plugin = SecureRuntimePlugin(
@@ -152,6 +158,44 @@ def test_secure_runtime_plugin_issues_capability_and_signs_model_output():
   )
 
 
+def test_secure_runtime_plugin_emits_anomaly_alerts_to_sink():
+  responses = [
+      types.Part.from_function_call(name='sealed_evidence', args={}),
+      'finished',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  ledger = InMemoryProvenanceLedger()
+  keyring = HmacKeyring({'judge-key': 'judge-secret'})
+  alert_sink = InMemoryAnomalyAlertSink()
+  plugin = SecureRuntimePlugin(
+      identity_registry=IdentityRegistry([
+          AgentIdentity(
+              agent_name='judge', key_id='judge-key', roles=('judge',)
+          )
+      ]),
+      capability_vault=CapabilityVault(
+          policy_engine=SimplePolicyEngine([]),
+          keyring=keyring,
+      ),
+      ledger=ledger,
+      anomaly_detector=RuleBasedAnomalyDetector(
+          high_risk_score_threshold=0.7,
+      ),
+      anomaly_alert_sink=alert_sink,
+  )
+  agent = Agent(
+      name='judge',
+      model=mock_model,
+      tools=[_named_tool(_denied_tool)],
+  )
+
+  runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
+  runner.run('start trial')
+
+  assert alert_sink.alerts
+  assert alert_sink.alerts[0].alert_type == 'high_risk_policy_decision'
+
+
 def test_secure_runtime_builder_wraps_app_and_services():
   responses = ['verdict issued']
   mock_model = testing_utils.MockModel.create(responses=responses)
@@ -188,3 +232,141 @@ def test_secure_runtime_builder_wraps_app_and_services():
   assert runner.app is not None
   assert any(plugin.name == 'secure_runtime' for plugin in runner.app.plugins)
   assert isinstance(runner.artifact_service, SealedArtifactService)
+
+
+def test_secure_runtime_plugin_requests_and_resumes_on_policy_approval():
+  responses = [
+      types.Part.from_function_call(name='sealed_evidence', args={}),
+      'verdict issued',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  plugin, ledger = _build_secure_plugin(allow_tool=True, requires_approval=True)
+  agent = Agent(
+      name='judge',
+      model=mock_model,
+      tools=[_named_tool(_allowed_tool)],
+  )
+  app = App(
+      name='courtroom',
+      root_agent=agent,
+      plugins=[plugin],
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  initial_events = runner.run('start trial')
+  confirmation_event = next(
+      event
+      for event in initial_events
+      if event.content
+      and event.content.parts
+      and event.content.parts[0].function_call
+      and event.content.parts[0].function_call.name
+      == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  initial_tool_response = next(
+      event.content.parts[0].function_response.response
+      for event in initial_events
+      if event.content
+      and event.content.parts
+      and event.content.parts[0].function_response
+      and event.content.parts[0].function_response.name == 'sealed_evidence'
+  )
+
+  assert initial_tool_response['status'] == 'requires_approval'
+
+  resumed_events = asyncio.run(
+      runner.run_async(
+          testing_utils.UserContent(
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=confirmation_event.content.parts[0].function_call.id,
+                      name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                      response={'confirmed': True},
+                  )
+              )
+          ),
+          invocation_id=initial_events[0].invocation_id,
+      )
+  )
+  resumed_tool_response = next(
+      event.content.parts[0].function_response.response
+      for event in resumed_events
+      if event.content
+      and event.content.parts
+      and event.content.parts[0].function_response
+      and event.content.parts[0].function_response.name == 'sealed_evidence'
+  )
+
+  assert resumed_tool_response == {'capability_present': True}
+
+  ledger_entries = asyncio.run(ledger.list_entries())
+  assert any(
+      entry.event_type == 'approval_requested' for entry in ledger_entries
+  )
+  assert any(entry.event_type == 'approval_granted' for entry in ledger_entries)
+
+
+def test_secure_runtime_plugin_denies_rejected_approval():
+  responses = [
+      types.Part.from_function_call(name='sealed_evidence', args={}),
+      'verdict issued',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  plugin, ledger = _build_secure_plugin(allow_tool=True, requires_approval=True)
+  agent = Agent(
+      name='judge',
+      model=mock_model,
+      tools=[_named_tool(_allowed_tool)],
+  )
+  app = App(
+      name='courtroom',
+      root_agent=agent,
+      plugins=[plugin],
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  initial_events = runner.run('start trial')
+  confirmation_event = next(
+      event
+      for event in initial_events
+      if event.content
+      and event.content.parts
+      and event.content.parts[0].function_call
+      and event.content.parts[0].function_call.name
+      == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+
+  resumed_events = asyncio.run(
+      runner.run_async(
+          testing_utils.UserContent(
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=confirmation_event.content.parts[0].function_call.id,
+                      name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                      response={'confirmed': False},
+                  )
+              )
+          ),
+          invocation_id=initial_events[0].invocation_id,
+      )
+  )
+  resumed_tool_response = next(
+      event.content.parts[0].function_response.response
+      for event in resumed_events
+      if event.content
+      and event.content.parts
+      and event.content.parts[0].function_response
+      and event.content.parts[0].function_response.name == 'sealed_evidence'
+  )
+
+  assert resumed_tool_response['status'] == 'denied'
+  assert (
+      resumed_tool_response['reason'] == 'Rejected by human approval workflow.'
+  )
+
+  ledger_entries = asyncio.run(ledger.list_entries())
+  assert any(
+      entry.event_type == 'approval_rejected' for entry in ledger_entries
+  )

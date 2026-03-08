@@ -25,6 +25,7 @@ from pydantic import ConfigDict
 from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.base_artifact_service import ensure_part
+from .lineage import LineageTracker
 from .provenance import BaseProvenanceLedger
 from .signing import HmacKeyring
 from .signing import payload_hash
@@ -42,6 +43,7 @@ class ArtifactSeal(BaseModel):
   algorithm: str = 'hmac-sha256'
   actor: str
   key_id: str
+  key_epoch: Optional[int] = None
   version: int
   digest: str
   previous_digest: Optional[str] = None
@@ -79,12 +81,14 @@ class SealedArtifactService(BaseArtifactService):
       signing_key_id: str,
       actor: str = 'secureadk-sealer',
       ledger: Optional[BaseProvenanceLedger] = None,
+      lineage_tracker: LineageTracker | None = None,
   ):
     self._delegate = delegate
     self._keyring = keyring
     self._signing_key_id = signing_key_id
     self._actor = actor
     self._ledger = ledger
+    self._lineage_tracker = lineage_tracker
 
   async def save_artifact(
       self,
@@ -133,6 +137,7 @@ class SealedArtifactService(BaseArtifactService):
     seal = ArtifactSeal(
         actor=self._actor,
         key_id=self._signing_key_id,
+        key_epoch=envelope.key_epoch,
         version=version,
         digest=digest,
         previous_digest=(
@@ -168,6 +173,23 @@ class SealedArtifactService(BaseArtifactService):
               'version': saved_version,
               'digest': digest,
               'previousDigest': seal.previous_digest,
+          },
+      )
+    if self._lineage_tracker is not None:
+      await self._lineage_tracker.record(
+          record_type='artifact_version',
+          entity_id=f'artifact:{app_name}:{session_id}:{filename}',
+          entity_version=str(saved_version),
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          payload={
+              'filename': filename,
+              'version': saved_version,
+              'digest': digest,
+              'previousDigest': seal.previous_digest,
+              'payloadHash': seal.payload_hash,
+              'signingKeyId': seal.key_id,
           },
       )
     return saved_version
@@ -325,6 +347,7 @@ class SealedArtifactService(BaseArtifactService):
         payload,
         key_id=seal.key_id,
         signature=seal.signature,
+        signed_at=seal.signed_at,
     ):
       return ArtifactVerificationResult(
           valid=False,

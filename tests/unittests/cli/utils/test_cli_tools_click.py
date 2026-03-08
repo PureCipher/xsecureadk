@@ -74,6 +74,16 @@ class _Recorder(BaseModel):
     self.calls.append((args, kwargs))
 
 
+class _CliReport(BaseModel):
+  valid: bool
+  kind: str
+
+
+class _CliBundle(BaseModel):
+  bundle_id: str
+  bundle_type: str
+
+
 # Fixtures
 @pytest.fixture(autouse=True)
 def _mute_click(request, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,6 +136,232 @@ def test_cli_create_cmd_invokes_run_cmd(
   )
   assert result.exit_code == 0, (result.output, repr(result.exception))
   assert rec.calls, "cli_create.run_cmd must be called"
+
+
+def test_cli_secure_verify_eval_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  eval_result_path = tmp_path / "result.json"
+  eval_result_path.write_text("{}", encoding="utf-8")
+  secure_config = tmp_path / "secureadk.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+  captured_kwargs = {}
+
+  def _verify_eval_result_file(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliReport(valid=True, kind="eval")
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "verify_eval_result_file",
+      _verify_eval_result_file,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "verify-eval",
+          str(app_root),
+          str(eval_result_path),
+          "--secure_config",
+          str(secure_config),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "eval_result_path": str(eval_result_path.resolve()),
+      "secure_config_path": str(secure_config.resolve()),
+  }
+
+
+def test_cli_secure_explain_policy_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  request_path = tmp_path / "request.json"
+  request_path.write_text("{}", encoding="utf-8")
+  captured_kwargs = {}
+
+  def _explain_policy_request(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliReport(valid=True, kind="policy")
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "explain_policy_request",
+      _explain_policy_request,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "explain-policy",
+          str(app_root),
+          str(request_path),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "request_path": str(request_path.resolve()),
+      "secure_config_path": None,
+  }
+
+
+def test_cli_secure_export_invocation_bundle_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  output_path = tmp_path / "bundle.json"
+  captured_kwargs = {}
+
+  def _export_invocation_bundle(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliBundle(
+        bundle_id="bundle-1",
+        bundle_type="invocation",
+    )
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "export_invocation_bundle",
+      _export_invocation_bundle,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "export-invocation-bundle",
+          str(app_root),
+          "invocation-1",
+          "--app_name",
+          "courtroom",
+          "--session_id",
+          "session-1",
+          "--output_path",
+          str(output_path),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "invocation_id": "invocation-1",
+      "secure_config_path": None,
+      "app_name": "courtroom",
+      "session_id": "session-1",
+      "output_path": str(output_path.resolve()),
+  }
+
+
+def test_cli_secure_export_eval_bundle_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  eval_result_path = tmp_path / "eval.json"
+  eval_result_path.write_text("{}", encoding="utf-8")
+  captured_kwargs = {}
+
+  def _export_eval_bundle(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliBundle(
+        bundle_id="bundle-2",
+        bundle_type="eval",
+    )
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "export_eval_bundle",
+      _export_eval_bundle,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "export-eval-bundle",
+          str(app_root),
+          str(eval_result_path),
+          "--app_name",
+          "courtroom",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "eval_result_path": str(eval_result_path.resolve()),
+      "secure_config_path": None,
+      "app_name": "courtroom",
+      "output_path": None,
+  }
+
+
+@pytest.mark.unmute_click
+def test_cli_secure_replay_ledger_exits_nonzero_for_invalid_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "replay_ledger",
+      lambda **_kwargs: _CliReport(valid=False, kind="ledger"),
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["secure", "replay-ledger", str(app_root)],
+  )
+
+  assert result.exit_code == 1
+  assert '"valid":false' in result.output.replace(" ", "").lower()
+
+
+@pytest.mark.unmute_click
+def test_cli_secure_verify_bundle_exits_nonzero_for_invalid_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  bundle_path = tmp_path / "bundle.json"
+  bundle_path.write_text("{}", encoding="utf-8")
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "verify_bundle_file",
+      lambda **_kwargs: _CliReport(valid=False, kind="bundle"),
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["secure", "verify-bundle", str(app_root), str(bundle_path)],
+  )
+
+  assert result.exit_code == 1
+  assert '"valid":false' in result.output.replace(" ", "").lower()
 
 
 # cli run
@@ -883,14 +1119,19 @@ def test_cli_eval_passes_secure_config(
   secure_config.write_text("enabled: false\n", encoding="utf-8")
   wrapper_calls = []
 
-  def _apply_secure_runtime_if_configured(**kwargs):
+  def _apply_secure_runtime_services_if_configured(**kwargs):
     wrapper_calls.append(kwargs)
-    return kwargs["app"], kwargs["artifact_service"]
+    return SimpleNamespace(
+        app=kwargs["app"],
+        artifact_service=kwargs["artifact_service"],
+        session_service=kwargs["session_service"],
+        builder=None,
+    )
 
   monkeypatch.setattr(
       "google.adk.cli.utils.secure_runtime_config."
-      "apply_secure_runtime_if_configured",
-      _apply_secure_runtime_if_configured,
+      "apply_secure_runtime_services_if_configured",
+      _apply_secure_runtime_services_if_configured,
   )
 
   result = CliRunner().invoke(

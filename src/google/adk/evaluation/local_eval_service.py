@@ -30,11 +30,13 @@ from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..errors.not_found_error import NotFoundError
 from ..memory.base_memory_service import BaseMemoryService
+from ..secure.trusted_evaluators import TrustedEvaluatorService
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
 from ..utils.feature_decorator import experimental
+from ._eval_set_results_manager_utils import create_eval_set_result
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -124,6 +126,7 @@ class LocalEvalService(BaseEvalService):
       session_id_supplier: Callable[[], str] = _get_session_id,
       user_simulator_provider: UserSimulatorProvider = UserSimulatorProvider(),
       memory_service: Optional[BaseMemoryService] = None,
+      trusted_evaluator_service: Optional[TrustedEvaluatorService] = None,
   ):
     self._root_agent = root_agent
     self._eval_sets_manager = eval_sets_manager
@@ -139,6 +142,7 @@ class LocalEvalService(BaseEvalService):
     self._session_id_supplier = session_id_supplier
     self._user_simulator_provider = user_simulator_provider
     self._memory_service = memory_service
+    self._trusted_evaluator_service = trusted_evaluator_service
 
   @override
   async def perform_inference(
@@ -220,11 +224,30 @@ class LocalEvalService(BaseEvalService):
       inference_result, eval_case_result = await evaluation_task
 
       if self._eval_set_results_manager:
-        self._eval_set_results_manager.save_eval_set_result(
-            app_name=inference_result.app_name,
-            eval_set_id=inference_result.eval_set_id,
-            eval_case_results=[eval_case_result],
-        )
+        if self._trusted_evaluator_service is not None and hasattr(
+            self._eval_set_results_manager,
+            'save_prebuilt_eval_set_result',
+        ):
+          eval_set_result = create_eval_set_result(
+              inference_result.app_name,
+              inference_result.eval_set_id,
+              [eval_case_result],
+          )
+          eval_set_result = (
+              await self._trusted_evaluator_service.sign_eval_set_result(
+                  eval_set_result
+              )
+          )
+          self._eval_set_results_manager.save_prebuilt_eval_set_result(
+              app_name=inference_result.app_name,
+              eval_set_result=eval_set_result,
+          )
+        else:
+          self._eval_set_results_manager.save_eval_set_result(
+              app_name=inference_result.app_name,
+              eval_set_id=inference_result.eval_set_id,
+              eval_case_results=[eval_case_result],
+          )
 
       yield eval_case_result
 
@@ -332,6 +355,12 @@ class LocalEvalService(BaseEvalService):
         ),
         user_id=user_id,
     )
+    if self._trusted_evaluator_service is not None:
+      eval_case_result = (
+          await self._trusted_evaluator_service.sign_eval_case_result(
+              eval_case_result
+          )
+      )
 
     return (inference_result, eval_case_result)
 
@@ -498,8 +527,6 @@ class LocalEvalService(BaseEvalService):
 
       inference_result.inferences = inferences
       inference_result.status = InferenceStatus.SUCCESS
-
-      return inference_result
     except Exception as e:
       # We intentionally catch the Exception as we don't failures to affect
       # other inferences.
@@ -511,4 +538,10 @@ class LocalEvalService(BaseEvalService):
       )
       inference_result.status = InferenceStatus.FAILURE
       inference_result.error_message = str(e)
-      return inference_result
+    if self._trusted_evaluator_service is not None:
+      inference_result = (
+          await self._trusted_evaluator_service.sign_inference_result(
+              inference_result
+          )
+      )
+    return inference_result

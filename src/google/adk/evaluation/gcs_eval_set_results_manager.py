@@ -36,7 +36,11 @@ _EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
 class GcsEvalSetResultsManager(EvalSetResultsManager):
   """An EvalSetResultsManager that stores eval results in a GCS bucket."""
 
-  def __init__(self, bucket_name: str, **kwargs):
+  def __init__(
+      self,
+      bucket_name: str,
+      **kwargs,
+  ):
     """Initializes the GcsEvalSetsManager.
 
     Args:
@@ -83,7 +87,18 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
     eval_set_result = create_eval_set_result(
         app_name, eval_set_id, eval_case_results
     )
+    self.save_prebuilt_eval_set_result(
+        app_name=app_name,
+        eval_set_result=eval_set_result,
+    )
 
+  def save_prebuilt_eval_set_result(
+      self,
+      *,
+      app_name: str,
+      eval_set_result: EvalSetResult,
+  ) -> None:
+    """Writes a prebuilt EvalSetResult to GCS."""
     eval_set_result_blob_name = self._get_eval_set_result_blob_name(
         app_name, eval_set_result.eval_set_result_id
     )

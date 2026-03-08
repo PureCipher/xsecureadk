@@ -103,13 +103,48 @@ runtime identity binding, policy-gated tool execution, response signing,
 provenance logging, and optional artifact sealing on top of the normal ADK
 execution path.
 
-SecureADK can be enabled in two ways:
+SecureADK is not a separate runner or fork of ADK. It attaches to the existing
+ADK runtime through the normal `App`, `Runner`, plugin, and artifact-service
+extension points.
 
-- Put `secureadk.yaml`, `secureadk.yml`, or `secureadk.json` in the agent or
-  app root for autodiscovery.
-- Pass `--secure_config /path/to/config` explicitly.
+### What SecureADK Adds
 
-The explicit flag is supported by:
+- Runtime identity binding for agents.
+- Policy checks before tool execution.
+- Short-lived capability issuance for allowed tool calls.
+- Signed model responses, including response-chain hashes in metadata.
+- Provenance records written to a ledger.
+- Optional artifact sealing through the artifact service wrapper.
+
+### How It Fits Into ADK
+
+At runtime, SecureADK layers onto the existing code path:
+
+1. ADK loads the agent or app normally.
+1. `SecureRuntimeBuilder` appends `SecureRuntimePlugin` to the app.
+1. The plugin binds agent names to registered identities.
+1. Before a tool executes, SecureADK evaluates policy and either:
+   - issues a capability token and allows the tool call, or
+   - returns a structured denial result.
+1. After a model response, SecureADK signs the response metadata.
+1. If artifact sealing is enabled, the artifact service is wrapped so saved
+   artifacts include a seal.
+
+This means you keep the standard ADK programming model while getting stronger
+runtime controls.
+
+### Enable SecureADK
+
+SecureADK config resolution works like this:
+
+1. `--secure_config /path/to/config` has highest precedence.
+1. If no explicit config is passed and `ADK_DISABLE_SECURE_RUNTIME=1` is set,
+   SecureADK file resolution is skipped for that process.
+1. Otherwise, `ADK_SECURE_CONFIG=/path/to/config` is used if present.
+1. Otherwise, ADK autodiscovers `secureadk.yaml`, `secureadk.yml`, or
+   `secureadk.json` from the loaded app root.
+
+The explicit `--secure_config` flag is supported by:
 
 - `adk run`
 - `adk eval`
@@ -119,13 +154,261 @@ The explicit flag is supported by:
 - `adk deploy gke`
 - `adk deploy agent_engine`
 
-You can disable autodiscovered SecureADK config for a process with
-`ADK_DISABLE_SECURE_RUNTIME=1`.
+### Config File
 
-`adk deploy agent_engine` supports SecureADK runtime loading, policy, signing,
-provenance, and artifact sealing. When SecureADK config is bundled for Agent
-Engine, the staged deployment package also pins `google-adk` to the current
-repo version so the generated runtime code matches the deployed ADK package.
+SecureADK config is file-backed and validated on load. YAML and JSON are both
+supported.
+
+Minimal example:
+
+```yaml
+enabled: true
+signing_keys:
+  dev-key:
+    secret: change-me-for-dev-only
+identities:
+  - agent_name: secure_hello_agent
+    key_id: dev-key
+    roles: [case_writer]
+policy:
+  default_effect: deny
+  default_capability_ttl_seconds: 300
+  rules:
+    - name: allow-record-evidence
+      principals: [secure_hello_agent]
+      roles: [case_writer]
+      tools: [record_evidence]
+      actions: [record_evidence]
+runtime:
+  plugin_name: secure_runtime
+  tenant_state_key: tenant_id
+  case_state_key: case_id
+  enforce_agent_identity: true
+  sign_model_responses: true
+  sign_partial_responses: false
+artifact_sealing:
+  enabled: false
+ledger:
+  path: .adk/secureadk/demo-ledger.jsonl
+```
+
+#### Top-Level Fields
+
+| Field | Purpose | Default |
+| --- | --- | --- |
+| `enabled` | Enables SecureADK for the loaded app. | `true` |
+| `signing_keys` | Named signing key definitions used for response signing, capability issuance, and optional artifact sealing. | required |
+| `identities` | Runtime identity registrations keyed by agent name. | required |
+| `policy` | Tool authorization policy engine config. | deny-by-default |
+| `runtime` | Plugin behavior and state-key mapping. | built-in defaults |
+| `artifact_sealing` | Artifact seal configuration. | disabled |
+| `ledger` | Provenance ledger output location. | `.adk/secureadk/ledger.jsonl` |
+
+#### `signing_keys`
+
+Each key must define exactly one of:
+
+- `secret`: inline secret value.
+- `secret_env`: environment variable containing the secret.
+
+Use `secret_env` for anything outside local development.
+
+#### `identities`
+
+Each identity entry supports:
+
+| Field | Purpose |
+| --- | --- |
+| `agent_name` | ADK agent name that SecureADK binds at runtime. |
+| `key_id` | Signing key used for that agent. |
+| `roles` | Role claims used by policy matching. |
+| `tenant_id` | Optional default tenant binding if state does not provide one. |
+| `attributes` | Extra claims copied into policy context. |
+
+When `runtime.enforce_agent_identity` is `true`, missing identities fail fast
+at runtime.
+
+#### `policy`
+
+Policy evaluation is rule-based and deny-by-default.
+
+Global policy fields:
+
+- `default_effect`: `allow` or `deny`. Default is `deny`.
+- `default_capability_ttl_seconds`: fallback TTL for issued capabilities.
+- `rules`: ordered rule set.
+
+Each rule supports:
+
+| Field | Purpose |
+| --- | --- |
+| `name` | Rule identifier recorded in decisions and the ledger. |
+| `effect` | `allow` or `deny`. |
+| `principals` | Agent-name patterns. |
+| `roles` | Role intersection requirement. |
+| `tools` | Tool-name patterns. |
+| `actions` | Action-name patterns. |
+| `app_names` | Optional app-name patterns. |
+| `tenant_ids` | Optional tenant filters. |
+| `required_context` | Context key/value filters. |
+| `required_tool_args` | Tool-argument key/value filters. |
+| `max_ttl_seconds` | Per-rule override for issued capability TTL. |
+| `risk_score` | Numeric score recorded on decisions and denials. |
+
+Important behavior:
+
+- Deny rules override allow rules.
+- If no rule matches, the policy engine uses `default_effect`.
+- Tool `action` defaults to the tool name.
+- You can override a tool action by setting
+  `tool.custom_metadata["secure_action"]`.
+
+Policy context currently includes tenant, case, tool name, and user ID, plus
+any custom identity attributes.
+
+#### `runtime`
+
+Runtime plugin settings:
+
+| Field | Purpose | Default |
+| --- | --- | --- |
+| `plugin_name` | Name of the injected app plugin. | `secure_runtime` |
+| `tenant_state_key` | Session state key used to resolve tenant. | `tenant_id` |
+| `case_state_key` | Session state key used to resolve case ID. | `case_id` |
+| `enforce_agent_identity` | Fail if an active agent has no registered identity. | `true` |
+| `sign_model_responses` | Sign non-empty model responses. | `true` |
+| `sign_partial_responses` | Also sign partial/streaming responses. | `false` |
+
+#### `artifact_sealing`
+
+Artifact sealing is off by default. When enabled:
+
+- `signing_key_id` becomes required.
+- artifacts saved through the wrapped ADK artifact service are sealed.
+- seal metadata is written alongside the artifact.
+
+#### `ledger`
+
+`ledger.path` controls where provenance entries are written. If omitted,
+SecureADK writes JSONL records to:
+
+```text
+.adk/secureadk/ledger.jsonl
+```
+
+### CLI Usage
+
+Run locally with autodiscovery:
+
+```bash
+adk run path/to/agent
+```
+
+Override config explicitly:
+
+```bash
+adk run \
+  --secure_config /absolute/path/to/secureadk.yaml \
+  path/to/agent
+```
+
+Run evaluations through the secured app path:
+
+```bash
+adk eval \
+  --secure_config /absolute/path/to/secureadk.yaml \
+  path/to/agent \
+  path/to/eval_set.json
+```
+
+Start the web UI or API server:
+
+```bash
+adk web --secure_config /absolute/path/to/secureadk.yaml path/to/agents_dir
+adk api_server --secure_config /absolute/path/to/secureadk.yaml path/to/agents_dir
+```
+
+Deploy with SecureADK bundled:
+
+```bash
+adk deploy cloud_run --secure_config /absolute/path/to/secureadk.yaml ...
+adk deploy gke --secure_config /absolute/path/to/secureadk.yaml ...
+adk deploy agent_engine --secure_config /absolute/path/to/secureadk.yaml ...
+```
+
+For `adk deploy agent_engine`, SecureADK config is packaged into the generated
+deployment source, and the staged `requirements.txt` is pinned to the current
+`google-adk` version when needed so the deployed runtime matches the generated
+SecureADK wrapper code.
+
+### Direct Python Integration
+
+If you do not want to rely on file-based config discovery, you can wire
+SecureADK directly in Python:
+
+```python
+from google.adk import Runner, SecureRuntimeBuilder
+from google.adk.apps import App
+from google.adk.secure import (
+    AgentIdentity,
+    CapabilityVault,
+    HmacKeyring,
+    IdentityRegistry,
+    InMemoryProvenanceLedger,
+    SimplePolicyEngine,
+)
+
+keyring = HmacKeyring({"dev-key": "change-me"})
+builder = SecureRuntimeBuilder(
+    identity_registry=IdentityRegistry([
+        AgentIdentity(
+            agent_name="secure_agent",
+            key_id="dev-key",
+            roles=("case_writer",),
+        )
+    ]),
+    capability_vault=CapabilityVault(
+        policy_engine=SimplePolicyEngine(
+            rules=[],
+            default_effect="deny",
+            default_capability_ttl_seconds=300,
+        ),
+        keyring=keyring,
+    ),
+    ledger=InMemoryProvenanceLedger(),
+    response_keyring=keyring,
+    artifact_signing_key_id="dev-key",
+    artifact_keyring=keyring,
+)
+
+app = App(name="secure_app", root_agent=root_agent)
+secure_app = builder.apply_to_app(app)
+secure_artifact_service = builder.wrap_artifact_service(artifact_service)
+
+runner = Runner(
+    app=secure_app,
+    artifact_service=secure_artifact_service,
+    session_service=session_service,
+)
+```
+
+### What You Will See At Runtime
+
+With SecureADK enabled:
+
+- model responses include SecureADK metadata under `custom_metadata["secureadk"]`
+- denied tool calls return a structured denial payload instead of silently
+  proceeding
+- provenance events are written to the configured ledger
+- sealed artifacts include seal metadata when artifact sealing is enabled
+
+### Recommended Adoption Path
+
+1. Start with response signing and provenance only.
+1. Add identities for every active agent.
+1. Turn on deny-by-default policy and allow only the tools you want.
+1. Enable artifact sealing for workflows that persist evidence or case files.
+1. Move secrets out of inline config and into environment variables.
 
 For a minimal working example, see
 `contributing/samples/secureadk_quickstart`.

@@ -158,6 +158,11 @@ class InferenceResult(BaseModel):
       description="""Error message if the inference failed.""",
   )
 
+  custom_metadata: dict[str, object] = Field(
+      default_factory=dict,
+      description="""Optional metadata for trusted evaluators and lineage.""",
+  )
+
 
 class EvaluateRequest(BaseModel):
   model_config = ConfigDict(
