@@ -14,11 +14,9 @@
 
 from __future__ import annotations
 
-from . import version
-from .agents.context import Context
-from .agents.llm_agent import Agent
-from .runners import Runner
-from .secure.runtime import SecureRuntimeBuilder
+from google.adk import SecureRuntimeBuilder
+from google.adk.secure import SecureRuntimeBuilder as SecureRuntimeBuilderFromSecure
 
-__version__ = version.__version__
-__all__ = ["Agent", "Context", "Runner", "SecureRuntimeBuilder"]
+
+def test_secure_runtime_builder_is_reexported() -> None:
+  assert SecureRuntimeBuilder is SecureRuntimeBuilderFromSecure

@@ -27,6 +27,8 @@ from typing import Optional
 import warnings
 
 import click
+from packaging.requirements import InvalidRequirement
+from packaging.requirements import Requirement
 from packaging.version import parse
 
 from ..version import __version__ as _CURRENT_ADK_VERSION
@@ -38,6 +40,7 @@ _SECURE_CONFIG_FLAG_MIN_VERSION: Final[str] = _CURRENT_ADK_VERSION
 _AGENT_ENGINE_REQUIREMENT: Final[str] = (
     'google-cloud-aiplatform[adk,agent_engines]'
 )
+_PINNED_ADK_REQUIREMENT: Final[str] = f'google-adk=={_CURRENT_ADK_VERSION}'
 
 
 def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
@@ -64,6 +67,58 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
     f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
+
+
+def _ensure_pinned_agent_engine_adk_dependency(
+    requirements_txt_path: str,
+) -> None:
+  """Pins staged Agent Engine requirements to this ADK version."""
+  if not os.path.exists(requirements_txt_path):
+    raise FileNotFoundError(
+        f'requirements.txt not found at: {requirements_txt_path}'
+    )
+
+  requirements = ''
+  with open(requirements_txt_path, 'r', encoding='utf-8') as f:
+    requirements = f.read()
+
+  exact_pin_present = False
+  for line in requirements.splitlines():
+    stripped = line.split(' #', 1)[0].strip()
+    if not stripped or stripped.startswith('#'):
+      continue
+
+    try:
+      requirement = Requirement(stripped)
+    except InvalidRequirement:
+      continue
+
+    if requirement.name != 'google-adk':
+      continue
+
+    if not requirement.specifier:
+      raise click.ClickException(
+          'SecureADK Agent Engine deployments require a versioned '
+          '`google-adk` dependency. Update requirements.txt to include '
+          f'`{_PINNED_ADK_REQUIREMENT}`.'
+      )
+    if parse(_CURRENT_ADK_VERSION) not in requirement.specifier:
+      raise click.ClickException(
+          'SecureADK Agent Engine deployments must use '
+          f'`{_PINNED_ADK_REQUIREMENT}` or a compatible specifier. Found '
+          f'`{requirement}`.'
+      )
+    if str(requirement.specifier) == f'=={_CURRENT_ADK_VERSION}':
+      exact_pin_present = True
+      break
+
+  if exact_pin_present:
+    return
+
+  with open(requirements_txt_path, 'a', encoding='utf-8') as f:
+    if requirements and not requirements.endswith('\n'):
+      f.write('\n')
+    f.write(_PINNED_ADK_REQUIREMENT + '\n')
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
@@ -126,8 +181,21 @@ else:
     location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
   )
 
+def _has_secure_runtime_config():
+  if {secure_config_path}:
+    return True
+
+  for candidate_name in ("secureadk.yaml", "secureadk.yml", "secureadk.json"):
+    if os.path.exists(os.path.join(os.path.dirname(__file__), candidate_name)):
+      return True
+
+  return False
+
 def _build_runtime_subject():
   secure_config_path = {secure_config_path}
+  if not _has_secure_runtime_config():
+    return {adk_app_type!r}, _base_adk_object, None
+
   from google.adk.apps.app import App
   from google.adk.cli.utils.secure_runtime_config import (
       load_secure_runtime_builder,
@@ -138,27 +206,54 @@ def _build_runtime_subject():
       secure_config_path=secure_config_path,
   )
   if secure_runtime_builder is None:
-    return {adk_app_type!r}, _base_adk_object
+    return {adk_app_type!r}, _base_adk_object, None
 
   if {adk_app_type!r} == "app":
-    return "app", secure_runtime_builder.apply_to_app(_base_adk_object)
+    return (
+        "app",
+        secure_runtime_builder.apply_to_app(_base_adk_object),
+        secure_runtime_builder,
+    )
 
   secure_app_name = re.sub(
       r"\\W|^(?=\\d)", "_", os.path.basename(os.path.dirname(__file__))
   ) or "agent_engine_secure_app"
   secure_app = App(name=secure_app_name, root_agent=_base_adk_object)
-  return "app", secure_runtime_builder.apply_to_app(secure_app)
+  return (
+      "app",
+      secure_runtime_builder.apply_to_app(secure_app),
+      secure_runtime_builder,
+  )
 
-_runtime_subject_type, _runtime_subject = _build_runtime_subject()
+_runtime_subject_type, _runtime_subject, _secure_runtime_builder = (
+    _build_runtime_subject()
+)
+
+def _build_artifact_service():
+  from google.adk.artifacts.in_memory_artifact_service import (
+      InMemoryArtifactService,
+  )
+
+  artifact_service = InMemoryArtifactService()
+  if _secure_runtime_builder is None:
+    return artifact_service
+  return _secure_runtime_builder.wrap_artifact_service(artifact_service)
+
+_adk_app_kwargs = {{
+    "enable_tracing": {trace_to_cloud_option},
+}}
+if _secure_runtime_builder is not None:
+  _adk_app_kwargs["artifact_service_builder"] = _build_artifact_service
+
 if _runtime_subject_type == "app":
   adk_app = AdkApp(
       app=_runtime_subject,
-      enable_tracing={trace_to_cloud_option},
+      **_adk_app_kwargs,
   )
 else:
   adk_app = AdkApp(
       agent=_runtime_subject,
-      enable_tracing={trace_to_cloud_option},
+      **_adk_app_kwargs,
   )
 """
 
@@ -685,17 +780,17 @@ def _find_secure_config_in_agent_folder(agent_folder: str) -> Optional[str]:
   return None
 
 
-def _validate_agent_engine_secure_config_support(
+def _load_agent_engine_secure_config(
     *,
     agent_folder: str,
     secure_config: Optional[str],
-) -> None:
-  """Rejects SecureADK features unsupported by Agent Engine deployment."""
+) -> Optional[object]:
+  """Loads and validates SecureADK config for Agent Engine deployment."""
   config_path = secure_config or _find_secure_config_in_agent_folder(
       agent_folder
   )
   if not config_path:
-    return
+    return None
 
   from .utils.secure_runtime_config import _load_config_data
   from .utils.secure_runtime_config import SecureRuntimeFileConfig
@@ -708,13 +803,7 @@ def _validate_agent_engine_secure_config_support(
     raise click.ClickException(
         f'Invalid SecureADK config for `adk deploy agent_engine`: {e}'
     ) from e
-  if config.enabled and config.artifact_sealing.enabled:
-    raise click.ClickException(
-        'SecureADK artifact sealing is not supported by '
-        '`adk deploy agent_engine` because Agent Engine manages artifact '
-        'services internally. Disable artifact sealing for this deployment '
-        'or use `adk deploy cloud_run` / `adk deploy gke`.'
-    )
+  return config
 
 
 def to_cloud_run(
@@ -1060,7 +1149,7 @@ def to_agent_engine(
         ignore=ignore_patterns,
         dirs_exist_ok=True,
     )
-    _validate_agent_engine_secure_config_support(
+    secure_runtime_config = _load_agent_engine_secure_config(
         agent_folder=agent_folder,
         secure_config=secure_config,
     )
@@ -1124,6 +1213,8 @@ def to_agent_engine(
           f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
         click.echo(f'Created {requirements_txt_path}')
     _ensure_agent_engine_dependency(requirements_txt_path)
+    if secure_runtime_config is not None:
+      _ensure_pinned_agent_engine_adk_dependency(requirements_txt_path)
     agent_config['requirements_file'] = f'{temp_folder}/requirements.txt'
 
     env_vars = {}

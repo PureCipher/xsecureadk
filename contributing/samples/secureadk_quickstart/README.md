@@ -41,6 +41,7 @@ adk run \
 
 The same flag is supported by:
 
+- `adk eval`
 - `adk web`
 - `adk api_server`
 - `adk deploy cloud_run`
@@ -82,6 +83,6 @@ adk deploy agent_engine \
   contributing/samples/secureadk_quickstart
 ```
 
-`adk deploy agent_engine` supports SecureADK runtime policy, signing, and
-provenance loading. It does not support SecureADK artifact sealing because the
-Agent Engine path does not expose artifact-service wrapping in this repo.
+`adk deploy agent_engine` supports SecureADK runtime policy, signing,
+provenance, and artifact sealing. When SecureADK config is bundled for Agent
+Engine, the staged package also pins `google-adk` to the current repo version.

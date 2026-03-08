@@ -25,7 +25,8 @@ import uuid
 from google.genai.types import Content
 from pydantic import BaseModel
 
-from ..agents.llm_agent import Agent
+from ..agents.base_agent import BaseAgent
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
@@ -189,7 +190,7 @@ class EvaluationGenerator:
 
   @staticmethod
   async def _generate_inferences_from_root_agent(
-      root_agent: Agent,
+      root_agent: BaseAgent | App,
       user_simulator: UserSimulator,
       reset_func: Optional[Any] = None,
       initial_session: Optional[SessionInput] = None,
@@ -197,8 +198,9 @@ class EvaluationGenerator:
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
+      app_name: Optional[str] = None,
   ) -> list[Invocation]:
-    """Scrapes the root agent in coordination with the user simulator."""
+    """Scrapes the root agent or app in coordination with the user simulator."""
 
     if not session_service:
       session_service = InMemorySessionService()
@@ -206,9 +208,13 @@ class EvaluationGenerator:
     if not memory_service:
       memory_service = InMemoryMemoryService()
 
-    app_name = (
-        initial_session.app_name if initial_session else "EvaluationGenerator"
+    app_name = app_name or (
+        initial_session.app_name if initial_session else None
     )
+    app_name = app_name or (
+        root_agent.name if isinstance(root_agent, App) else None
+    )
+    app_name = app_name or "EvaluationGenerator"
     user_id = initial_session.user_id if initial_session else "test_user_id"
     session_id = session_id if session_id else str(uuid.uuid4())
 
@@ -235,13 +241,35 @@ class EvaluationGenerator:
     ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
         name="ensure_retry_options"
     )
+    if isinstance(root_agent, App):
+      eval_app = root_agent.model_copy(
+          update={
+              "plugins": [
+                  *root_agent.plugins,
+                  request_intercepter_plugin,
+                  ensure_retry_options_plugin,
+              ]
+          }
+      )
+      runner_args = {
+          "app": eval_app,
+          "app_name": app_name,
+      }
+    else:
+      runner_args = {
+          "app_name": app_name,
+          "agent": root_agent,
+          "plugins": [
+              request_intercepter_plugin,
+              ensure_retry_options_plugin,
+          ],
+      }
+
     async with Runner(
-        app_name=app_name,
-        agent=root_agent,
+        **runner_args,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
       events = []
       while True:

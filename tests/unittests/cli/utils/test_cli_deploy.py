@@ -300,7 +300,7 @@ def test_to_agent_engine_happy_path(
   assert "adk_app = AdkApp(" in content
   assert "agent=_runtime_subject" in content
   assert "return 'agent', _base_adk_object" in content
-  assert "enable_tracing=True" in content
+  assert '"enable_tracing": True' in content
   reqs_path = tmp_dir / "requirements.txt"
   assert reqs_path.is_file()
   assert "google-cloud-aiplatform[adk,agent_engines]" in reqs_path.read_text()
@@ -365,7 +365,7 @@ def test_to_agent_engine_stages_secure_config(
     agent_dir: Callable[[bool, bool], Path],
     tmp_path: Path,
 ) -> None:
-  """It should stage `--secure_config` and load it in the generated app."""
+  """It should stage SecureADK config, pin ADK, and wire artifact sealing."""
   rmtree_recorder = _Recorder()
   monkeypatch.setattr(shutil, "rmtree", rmtree_recorder)
 
@@ -403,6 +403,9 @@ def test_to_agent_engine_stages_secure_config(
           "  - agent_name: dummy_agent",
           "    key_id: default",
           "    tenant_id: tenant-1",
+          "artifact_sealing:",
+          "  enabled: true",
+          "  signing_key_id: default",
       )),
       encoding="utf-8",
   )
@@ -427,9 +430,11 @@ def test_to_agent_engine_stages_secure_config(
   content = (tmp_dir / "my_adk_app.py").read_text(encoding="utf-8")
   assert "load_secure_runtime_builder" in content
   assert "secure_config_path = '.secureadk.deploy.yaml'" in content
-  assert 'return "app", secure_runtime_builder.apply_to_app(secure_app)' in (
-      content
-  )
+  assert "secure_runtime_builder.apply_to_app(secure_app)" in content
+  assert '"artifact_service_builder"' in content
+  assert "wrap_artifact_service(artifact_service)" in content
+  requirements = (tmp_dir / "requirements.txt").read_text(encoding="utf-8")
+  assert cli_deploy._PINNED_ADK_REQUIREMENT in requirements
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
 
 
@@ -485,11 +490,14 @@ def test_to_agent_engine_validates_agent_import_when_enabled(
   assert len(validate_recorder.calls) == 1
 
 
-def test_to_agent_engine_rejects_artifact_sealing_secure_config(
+def test_to_agent_engine_rejects_incompatible_google_adk_requirement(
     agent_dir: Callable[[bool, bool], Path],
 ) -> None:
-  """It should fail fast when SecureADK artifact sealing is configured."""
+  """It should reject incompatible google-adk pins for SecureADK packages."""
   src_dir = agent_dir(False, False)
+  (src_dir / "requirements.txt").write_text(
+      "google-adk==0.0.1\n", encoding="utf-8"
+  )
   (src_dir / "secureadk.yaml").write_text(
       "\n".join((
           "enabled: true",
@@ -500,14 +508,11 @@ def test_to_agent_engine_rejects_artifact_sealing_secure_config(
           "  - agent_name: dummy_agent",
           "    key_id: default",
           "    tenant_id: tenant-1",
-          "artifact_sealing:",
-          "  enabled: true",
-          "  signing_key_id: default",
       )),
       encoding="utf-8",
   )
 
-  with pytest.raises(click.ClickException, match="artifact sealing"):
+  with pytest.raises(click.ClickException, match="google-adk"):
     cli_deploy.to_agent_engine(
         agent_folder=str(src_dir),
         temp_folder="tmp",

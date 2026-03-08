@@ -721,6 +721,7 @@ def eval_options():
 
 @main.command("eval", cls=HelpfulCommand)
 @feature_options()
+@secure_runtime_options()
 @click.argument(
     "agent_module_file_path",
     type=click.Path(
@@ -742,6 +743,7 @@ def cli_eval(
     eval_set_file_path_or_id: list[str],
     config_file_path: str,
     print_detailed_results: bool,
+    secure_config: Optional[str] = None,
     eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
 ):
@@ -805,6 +807,8 @@ def cli_eval(
   try:
     import importlib
 
+    from ..apps.app import App
+    from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
     from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
@@ -821,10 +825,12 @@ def cli_eval(
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import get_agent_or_app
     from .cli_eval import get_default_metric_info
-    from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
+    from .utils.secure_runtime_config import apply_secure_runtime_if_configured
+    from .utils.secure_runtime_config import resolve_loaded_app_root
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
@@ -832,11 +838,25 @@ def cli_eval(
   print(f"Using evaluation criteria: {eval_config}")
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  root_agent = get_root_agent(agent_module_file_path)
+  agent_or_app = get_agent_or_app(agent_module_file_path)
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   eval_sets_manager = None
   eval_set_results_manager = None
+  artifact_service = InMemoryArtifactService()
+  eval_app = (
+      agent_or_app
+      if isinstance(agent_or_app, App)
+      else App(name=app_name, root_agent=agent_or_app)
+  )
+  eval_app, artifact_service = apply_secure_runtime_if_configured(
+      app=eval_app,
+      artifact_service=artifact_service,
+      app_root=resolve_loaded_app_root(
+          agent_or_app, fallback_root=agent_module_file_path
+      ),
+      secure_config_path=secure_config,
+  )
 
   if eval_storage_uri:
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
@@ -933,11 +953,12 @@ def cli_eval(
         )
 
     eval_service = LocalEvalService(
-        root_agent=root_agent,
+        root_agent=eval_app,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
         user_simulator_provider=user_simulator_provider,
         metric_evaluator_registry=metric_evaluator_registry,
+        artifact_service=artifact_service,
     )
 
     inference_results = asyncio.run(

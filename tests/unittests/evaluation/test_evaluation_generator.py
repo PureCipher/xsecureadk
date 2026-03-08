@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.apps.app import App
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
@@ -23,6 +25,7 @@ from google.adk.evaluation.simulation.user_simulator import Status as UserSimula
 from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
+from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types
 import pytest
 
@@ -37,6 +40,19 @@ def _build_event(
       content=types.Content(parts=parts),
       invocation_id=invocation_id,
   )
+
+
+class _DummyAgent(BaseAgent):
+
+  def __init__(self, name: str) -> None:
+    super().__init__(name=name)
+    self.sub_agents = []
+
+
+class _DummyPlugin(BasePlugin):
+
+  def __init__(self, name: str) -> None:
+    super().__init__(name=name)
 
 
 class TestConvertEventsToEvalInvocation:
@@ -457,3 +473,72 @@ class TestGenerateInferencesFromRootAgent:
     mock_generate_inferences.assert_called_once()
     called_with_content = mock_generate_inferences.call_args.args[3]
     assert called_with_content.parts[0].text == "message 1"
+
+  @pytest.mark.asyncio
+  async def test_generates_inferences_with_app_plugins_preserved(
+      self, mocker, mock_session_service
+  ):
+    """Tests that app-scoped plugins are preserved when eval runs an App."""
+    mock_runner_cls = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.Runner"
+    )
+    mock_runner_instance = mocker.AsyncMock()
+    mock_runner_instance.__aenter__.return_value = mock_runner_instance
+    mock_runner_cls.return_value = mock_runner_instance
+
+    eval_app = App(
+        name="courtroom",
+        root_agent=_DummyAgent("judge"),
+        plugins=[_DummyPlugin("existing_plugin")],
+    )
+    mock_user_sim = mocker.MagicMock(spec=UserSimulator)
+
+    async def get_next_user_message_side_effect(*args, **kwargs):
+      del args, kwargs
+      if mock_user_sim.get_next_user_message.call_count == 1:
+        return NextUserMessage(
+            status=UserSimulatorStatus.SUCCESS,
+            user_message=types.Content(parts=[types.Part(text="message 1")]),
+        )
+      return NextUserMessage(status=UserSimulatorStatus.STOP_SIGNAL_DETECTED)
+
+    mock_user_sim.get_next_user_message = mocker.AsyncMock(
+        side_effect=get_next_user_message_side_effect
+    )
+    mock_generate_inferences = mocker.patch(
+        "google.adk.evaluation.evaluation_generator."
+        "EvaluationGenerator._generate_inferences_for_single_user_invocation"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator."
+        "EvaluationGenerator._get_app_details_by_invocation_id"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator."
+        "EvaluationGenerator.convert_events_to_eval_invocations"
+    )
+
+    async def mock_generate_inferences_side_effect(
+        runner, user_id, session_id, user_content
+    ):
+      del runner, user_id, session_id
+      yield _build_event("user", user_content.parts, "inv1")
+      yield _build_event("agent", [types.Part(text="agent_response")], "inv1")
+
+    mock_generate_inferences.side_effect = mock_generate_inferences_side_effect
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=eval_app,
+        user_simulator=mock_user_sim,
+        app_name="eval_app_name",
+    )
+
+    runner_kwargs = mock_runner_cls.call_args.kwargs
+    assert runner_kwargs["app_name"] == "eval_app_name"
+    assert "plugins" not in runner_kwargs
+    runner_app = runner_kwargs["app"]
+    assert [plugin.name for plugin in runner_app.plugins] == [
+        "existing_plugin",
+        "request_intercepter_plugin",
+        "ensure_retry_options",
+    ]

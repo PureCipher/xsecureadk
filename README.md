@@ -112,6 +112,7 @@ SecureADK can be enabled in two ways:
 The explicit flag is supported by:
 
 - `adk run`
+- `adk eval`
 - `adk web`
 - `adk api_server`
 - `adk deploy cloud_run`
@@ -122,9 +123,9 @@ You can disable autodiscovered SecureADK config for a process with
 `ADK_DISABLE_SECURE_RUNTIME=1`.
 
 `adk deploy agent_engine` supports SecureADK runtime loading, policy, signing,
-and provenance. It does not support SecureADK artifact sealing in this repo,
-because the Agent Engine deployment path does not expose artifact-service
-wrapping.
+provenance, and artifact sealing. When SecureADK config is bundled for Agent
+Engine, the staged deployment package also pins `google-adk` to the current
+repo version so the generated runtime code matches the deployed ADK package.
 
 For a minimal working example, see
 `contributing/samples/secureadk_quickstart`.

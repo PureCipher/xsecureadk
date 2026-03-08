@@ -1372,17 +1372,17 @@ class AdkWebServer:
               status_code=400, detail=f"Eval set `{eval_set_id}` not found."
           )
 
-        agent_or_app = self.agent_loader.load_agent(app_name)
-        root_agent = self._get_root_agent(agent_or_app)
+        runner = await self.get_runner_async(app_name)
+        eval_subject = runner.app or runner.agent
 
         eval_case_results = []
 
         eval_service = LocalEvalService(
-            root_agent=root_agent,
+            root_agent=eval_subject,
             eval_sets_manager=self.eval_sets_manager,
             eval_set_results_manager=self.eval_set_results_manager,
             session_service=self.session_service,
-            artifact_service=await self._get_artifact_service_async(app_name),
+            artifact_service=runner.artifact_service,
         )
         inference_request = InferenceRequest(
             app_name=app_name,

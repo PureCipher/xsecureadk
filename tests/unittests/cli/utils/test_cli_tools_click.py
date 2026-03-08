@@ -58,8 +58,8 @@ def mock_load_eval_set_from_file():
 
 
 @pytest.fixture
-def mock_get_root_agent():
-  with mock.patch("google.adk.cli.cli_eval.get_root_agent") as mock_func:
+def mock_get_agent_or_app():
+  with mock.patch("google.adk.cli.cli_eval.get_agent_or_app") as mock_func:
     mock_func.return_value = root_agent
     yield mock_func
 
@@ -790,7 +790,7 @@ def test_cli_web_warns_and_maps_deprecated_uris(
 
 def test_cli_eval_with_eval_set_file_path(
     mock_load_eval_set_from_file,
-    mock_get_root_agent,
+    mock_get_agent_or_app,
     tmp_path,
 ):
   agent_path = tmp_path / "my_agent"
@@ -822,7 +822,7 @@ def test_cli_eval_with_eval_set_file_path(
 
 
 def test_cli_eval_with_eval_set_id(
-    mock_get_root_agent,
+    mock_get_agent_or_app,
     tmp_path,
 ):
   app_name = "test_app"
@@ -858,6 +858,54 @@ def test_cli_eval_with_eval_set_id(
       app_name=app_name
   )
   assert len(eval_set_results) == 2
+
+
+def test_cli_eval_passes_secure_config(
+    mock_load_eval_set_from_file,
+    mock_get_agent_or_app,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """`adk eval` should forward explicit SecureADK config to the wrapper."""
+  del mock_get_agent_or_app
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}", encoding="utf-8")
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[EvalCase(eval_id="case1", conversation=[])],
+  )
+
+  secure_config = tmp_path / "secureadk.yaml"
+  secure_config.write_text("enabled: false\n", encoding="utf-8")
+  wrapper_calls = []
+
+  def _apply_secure_runtime_if_configured(**kwargs):
+    wrapper_calls.append(kwargs)
+    return kwargs["app"], kwargs["artifact_service"]
+
+  monkeypatch.setattr(
+      "google.adk.cli.utils.secure_runtime_config."
+      "apply_secure_runtime_if_configured",
+      _apply_secure_runtime_if_configured,
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.cli_eval,
+      [
+          "--secure_config",
+          str(secure_config),
+          str(agent_path),
+          str(eval_set_file),
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert len(wrapper_calls) == 1
+  assert wrapper_calls[0]["secure_config_path"] == str(secure_config.resolve())
 
 
 def test_cli_create_eval_set(tmp_path: Path):

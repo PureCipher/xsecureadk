@@ -24,7 +24,8 @@ from typing import Optional
 import click
 from google.genai import types as genai_types
 
-from ..agents.llm_agent import Agent
+from ..agents.base_agent import BaseAgent
+from ..apps.app import App
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -40,6 +41,7 @@ from ..evaluation.eval_metrics import MetricValueInfo
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..utils.context_utils import Aclosing
+from .utils.agent_loader import AgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -86,11 +88,19 @@ def get_default_metric_info(
   )
 
 
-def get_root_agent(agent_module_file_path: str) -> Agent:
+def get_agent_or_app(agent_module_file_path: str) -> BaseAgent | App:
+  """Returns the loaded agent or app for the given agent module path."""
+  agent_dir = os.path.abspath(agent_module_file_path)
+  agent_loader = AgentLoader(agents_dir=os.path.dirname(agent_dir))
+  return agent_loader.load_agent(os.path.basename(agent_dir))
+
+
+def get_root_agent(agent_module_file_path: str) -> BaseAgent:
   """Returns root agent given the agent module."""
-  agent_module = _get_agent_module(agent_module_file_path)
-  root_agent = agent_module.agent.root_agent
-  return root_agent
+  agent_or_app = get_agent_or_app(agent_module_file_path)
+  if isinstance(agent_or_app, App):
+    return agent_or_app.root_agent
+  return agent_or_app
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:
