@@ -149,6 +149,12 @@ class TenantIsolationManager:
       return app_name
     return app_name.split(_TENANT_APP_MARKER, maxsplit=1)[0]
 
+  @staticmethod
+  def tenant_from_app_name(app_name: str) -> Optional[str]:
+    if _TENANT_APP_MARKER not in app_name:
+      return None
+    return app_name.split(_TENANT_APP_MARKER, maxsplit=1)[1]
+
 
 class TenantIsolatedSessionService(BaseSessionService):
   """Session service wrapper that namespaces storage by tenant."""

@@ -23,8 +23,10 @@ from google.adk.cli.utils.secure_runtime_config import apply_secure_runtime_if_c
 from google.adk.cli.utils.secure_runtime_config import apply_secure_runtime_services_if_configured
 from google.adk.cli.utils.secure_runtime_config import load_secure_runtime_builder
 from google.adk.secure.artifact_sealing import SealedArtifactService
+from google.adk.secure.attestation import DeploymentAttestor
 from google.adk.secure.isolation import TenantIsolatedArtifactService
 from google.adk.secure.isolation import TenantIsolatedSessionService
+from google.adk.secure.signing import HmacKeyring
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
 
@@ -185,4 +187,123 @@ def test_load_secure_runtime_builder_with_extended_secure_stack(
   assert isinstance(
       secured.artifact_service._delegate,  # pylint: disable=protected-access
       TenantIsolatedArtifactService,
+  )
+
+
+def test_load_secure_runtime_builder_with_observability_and_recommendations(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+  app_root = tmp_path / 'courtroom'
+  app_root.mkdir()
+  (app_root / 'secureadk.yaml').write_text(
+      '\n'.join([
+          'signing_keys:',
+          '  judge-key:',
+          '    secret_env: JUDGE_SECRET',
+          'identities:',
+          '  - agent_name: judge',
+          '    key_id: judge-key',
+          '    roles: [judge]',
+          'policy:',
+          '  rules:',
+          '    - name: judge-any-tool',
+          '      principals: [judge]',
+          "      tools: ['*']",
+          "      actions: ['*']",
+          'observability:',
+          '  enabled: true',
+          '  logging:',
+          '    enabled: true',
+          '  export:',
+          '    enabled: true',
+          'telemetry_privacy:',
+          '  enabled: true',
+          '  mode: tokenize',
+          '  tokenization_key_id: judge-key',
+          'policy_recommendations:',
+          '  enabled: true',
+      ]),
+      encoding='utf-8',
+  )
+  monkeypatch.setenv('JUDGE_SECRET', 'top-secret')
+
+  builder = load_secure_runtime_builder(app_root)
+
+  assert builder is not None
+  assert builder.secure_event_sink is not None
+  assert builder.telemetry_redactor is not None
+  assert builder.policy_recommender is not None
+  assert builder.observability_sink_names == [
+      'LoggingSecureEventSink',
+      'FileSecureEventSink',
+  ]
+
+
+def test_load_secure_runtime_builder_with_attestation_trust_and_tenant_crypto(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+  app_root = tmp_path / 'courtroom'
+  app_root.mkdir()
+  (app_root / 'secureadk.yaml').write_text(
+      '\n'.join([
+          'signing_keys:',
+          '  judge-key:',
+          '    secret_env: JUDGE_SECRET',
+          'identities:',
+          '  - agent_name: judge',
+          '    key_id: judge-key',
+          '    roles: [judge]',
+          '    tenant_id: tenant-a',
+          'policy:',
+          '  rules:',
+          '    - name: judge-any-tool',
+          '      principals: [judge]',
+          "      tools: ['*']",
+          "      actions: ['*']",
+          'tenant_isolation:',
+          '  enabled: true',
+          '  bindings:',
+          '    - user_id: alice',
+          '      tenant_id: tenant-a',
+          'tenant_crypto:',
+          '  enabled: true',
+          '  require_tenant: true',
+          'deployment_attestation:',
+          '  enabled: true',
+          '  signing_key_id: judge-key',
+          'trust_scoring:',
+          '  enabled: true',
+      ]),
+      encoding='utf-8',
+  )
+  monkeypatch.setenv('JUDGE_SECRET', 'top-secret')
+  (app_root / 'agent.py').write_text(
+      'root_agent = object()\n', encoding='utf-8'
+  )
+  attestor = DeploymentAttestor(
+      keyring=HmacKeyring({'judge-key': 'top-secret'}),
+      signing_key_id='judge-key',
+  )
+  attestation = attestor.build_attestation(
+      app_name='courtroom',
+      deployment_target='cloud_run',
+      source_root=app_root,
+  )
+  attestor.write_attestation(
+      attestation,
+      output_path=app_root / '.secureadk.attestation.json',
+  )
+
+  builder = load_secure_runtime_builder(app_root)
+
+  assert builder is not None
+  assert builder.deployment_attestor is not None
+  assert builder.deployment_attestation is not None
+  assert builder.trust_scorer is not None
+  assert builder.tenant_crypto_manager is not None
+  assert (
+      builder.deployment_attestation.attestation_id
+      == attestation.attestation_id
   )

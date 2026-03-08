@@ -26,6 +26,8 @@ from .lineage import LineageTracker
 from .provenance import BaseProvenanceLedger
 from .signing import HmacKeyring
 from .signing import payload_hash
+from .tenant_crypto import TenantCryptoManager
+from .trust import TrustScorer
 
 TRUSTED_EVALUATOR_METADATA_KEY = 'secureadk:trusted_evaluator'
 
@@ -74,6 +76,8 @@ class TrustedEvaluatorService:
       sign_inference_results: bool = True,
       sign_eval_case_results: bool = True,
       sign_eval_set_results: bool = True,
+      tenant_crypto_manager: TenantCryptoManager | None = None,
+      trust_scorer: TrustScorer | None = None,
   ):
     self._evaluator_name = evaluator_name
     self._key_id = key_id
@@ -84,17 +88,27 @@ class TrustedEvaluatorService:
     self._sign_inference_results = sign_inference_results
     self._sign_eval_case_results = sign_eval_case_results
     self._sign_eval_set_results = sign_eval_set_results
+    self._tenant_crypto_manager = tenant_crypto_manager
+    self._trust_scorer = trust_scorer
 
   @property
   def evaluator_name(self) -> str:
     return self._evaluator_name
 
   async def sign_inference_result(
-      self, inference_result: InferenceResult
+      self,
+      inference_result: InferenceResult,
+      *,
+      tenant_id: str | None = None,
   ) -> InferenceResult:
     """Signs an inference result if this result type is enabled."""
     if not self._sign_inference_results:
       return inference_result
+    tenant_id = tenant_id or await self._resolve_tenant_id(
+        app_name=inference_result.app_name,
+        user_id=None,
+        session_id=inference_result.session_id,
+    )
     metadata = await self._build_metadata(
         result_type='inference_result',
         payload=self._result_payload(inference_result),
@@ -102,37 +116,61 @@ class TrustedEvaluatorService:
         session_id=inference_result.session_id,
         eval_set_id=inference_result.eval_set_id,
         eval_case_id=inference_result.eval_case_id,
+        tenant_id=tenant_id,
     )
     inference_result.custom_metadata[TRUSTED_EVALUATOR_METADATA_KEY] = metadata
     return inference_result
 
   async def sign_eval_case_result(
-      self, eval_case_result: EvalCaseResult
+      self,
+      eval_case_result: EvalCaseResult,
+      *,
+      app_name: str | None = None,
+      tenant_id: str | None = None,
   ) -> EvalCaseResult:
     """Signs an eval case result if this result type is enabled."""
     if not self._sign_eval_case_results:
       return eval_case_result
+    tenant_id = tenant_id or await self._resolve_tenant_id(
+        app_name=app_name,
+        user_id=eval_case_result.user_id,
+        session_id=eval_case_result.session_id,
+    )
     metadata = await self._build_metadata(
         result_type='eval_case_result',
         payload=self._result_payload(eval_case_result),
+        app_name=app_name,
         session_id=eval_case_result.session_id,
         eval_set_id=eval_case_result.eval_set_id,
         eval_case_id=eval_case_result.eval_id,
+        tenant_id=tenant_id,
     )
     eval_case_result.custom_metadata[TRUSTED_EVALUATOR_METADATA_KEY] = metadata
     return eval_case_result
 
   async def sign_eval_set_result(
-      self, eval_set_result: EvalSetResult
+      self,
+      eval_set_result: EvalSetResult,
+      *,
+      app_name: str | None = None,
+      tenant_id: str | None = None,
   ) -> EvalSetResult:
     """Signs an eval set result if this result type is enabled."""
     if not self._sign_eval_set_results:
       return eval_set_result
+    if tenant_id is None and eval_set_result.eval_case_results:
+      tenant_metadata = eval_set_result.eval_case_results[
+          0
+      ].custom_metadata.get(TRUSTED_EVALUATOR_METADATA_KEY, {})
+      if isinstance(tenant_metadata, dict):
+        tenant_id = tenant_metadata.get('tenantId')
     metadata = await self._build_metadata(
         result_type='eval_set_result',
         payload=self._result_payload(eval_set_result),
+        app_name=app_name,
         eval_set_id=eval_set_result.eval_set_id,
         eval_case_id=None,
+        tenant_id=tenant_id,
     )
     eval_set_result.custom_metadata[TRUSTED_EVALUATOR_METADATA_KEY] = metadata
     return eval_set_result
@@ -163,6 +201,7 @@ class TrustedEvaluatorService:
         key_id=key_id,
         signature=signature,
         signed_at=metadata.get('signedAt'),
+        tenant_id=metadata.get('tenantId'),
     )
 
   async def _build_metadata(
@@ -174,6 +213,7 @@ class TrustedEvaluatorService:
       session_id: str | None = None,
       eval_set_id: str | None = None,
       eval_case_id: str | None = None,
+      tenant_id: str | None = None,
   ) -> dict[str, Any]:
     signature_payload = self._signature_payload(
         result_type=result_type,
@@ -182,11 +222,21 @@ class TrustedEvaluatorService:
         eval_case_id=eval_case_id,
         session_id=session_id,
     )
-    envelope = self._keyring.sign_value(signature_payload, key_id=self._key_id)
+    envelope = (
+        self._keyring.sign_value(signature_payload, key_id=self._key_id)
+        if self._tenant_crypto_manager is None
+        else self._tenant_crypto_manager.sign_value(
+            keyring=self._keyring,
+            value=signature_payload,
+            key_id=self._key_id,
+            tenant_id=tenant_id,
+        )
+    )
     metadata = {
         'evaluatorName': self._evaluator_name,
         'keyId': self._key_id,
         'keyEpoch': envelope.key_epoch,
+        'keyScope': envelope.key_scope,
         'resultType': result_type,
         'evalSetId': eval_set_id,
         'evalCaseId': eval_case_id,
@@ -195,6 +245,8 @@ class TrustedEvaluatorService:
         'signature': envelope.signature,
         'signedAt': envelope.signed_at,
     }
+    if envelope.tenant_id is not None:
+      metadata['tenantId'] = envelope.tenant_id
     if self._ledger is not None:
       await self._ledger.append(
           event_type='trusted_evaluator_signed',
@@ -216,6 +268,14 @@ class TrustedEvaluatorService:
               **metadata,
               'resultHash': payload_hash(payload),
           },
+      )
+    if self._trust_scorer is not None:
+      await self._trust_scorer.record_signature_verification(
+          subject_type='evaluator',
+          subject_id=self._evaluator_name,
+          valid=True,
+          reason='Trusted evaluator output signed.',
+          tenant_id=envelope.tenant_id,
       )
     return metadata
 
@@ -244,3 +304,18 @@ class TrustedEvaluatorService:
         'sessionId': session_id,
         'payload': payload,
     }
+
+  async def _resolve_tenant_id(
+      self,
+      *,
+      app_name: str | None,
+      user_id: str | None,
+      session_id: str | None,
+  ) -> str | None:
+    if self._tenant_crypto_manager is None or app_name is None:
+      return None
+    return await self._tenant_crypto_manager.resolve_tenant_id(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+    )

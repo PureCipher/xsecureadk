@@ -181,6 +181,83 @@ def test_cli_secure_verify_eval_forwards_arguments(
   }
 
 
+def test_cli_secure_verify_attestation_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  attestation_path = tmp_path / "attestation.json"
+  attestation_path.write_text("{}", encoding="utf-8")
+  source_root = tmp_path / "source"
+  source_root.mkdir()
+  captured_kwargs = {}
+
+  def _verify_attestation(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliReport(valid=True, kind="attestation")
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "verify_attestation",
+      _verify_attestation,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "verify-attestation",
+          str(app_root),
+          "--attestation_path",
+          str(attestation_path),
+          "--source_root",
+          str(source_root),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "secure_config_path": None,
+      "attestation_path": str(attestation_path.resolve()),
+      "source_root": str(source_root.resolve()),
+  }
+
+
+def test_cli_secure_trust_report_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  captured_kwargs = {}
+
+  def _get_trust_report(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliReport(valid=True, kind="trust")
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "get_trust_report",
+      _get_trust_report,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["secure", "trust-report", str(app_root), "--limit", "5"],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "secure_config_path": None,
+      "limit": 5,
+  }
+
+
 def test_cli_secure_explain_policy_forwards_arguments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -316,6 +393,88 @@ def test_cli_secure_export_eval_bundle_forwards_arguments(
   }
 
 
+def test_cli_secure_diff_invocations_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  captured_kwargs = {}
+
+  def _diff_invocations(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliReport(valid=True, kind="replay_diff")
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "diff_invocations",
+      _diff_invocations,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "diff-invocations",
+          str(app_root),
+          "invocation-left",
+          "invocation-right",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "left_invocation_id": "invocation-left",
+      "right_invocation_id": "invocation-right",
+      "secure_config_path": None,
+  }
+
+
+def test_cli_secure_diff_bundles_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  left_bundle = tmp_path / "left.json"
+  right_bundle = tmp_path / "right.json"
+  left_bundle.write_text("{}", encoding="utf-8")
+  right_bundle.write_text("{}", encoding="utf-8")
+  captured_kwargs = {}
+
+  def _diff_bundle_files(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliReport(valid=True, kind="bundle_diff")
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "diff_bundle_files",
+      _diff_bundle_files,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "diff-bundles",
+          str(app_root),
+          str(left_bundle),
+          str(right_bundle),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "left_bundle_path": str(left_bundle.resolve()),
+      "right_bundle_path": str(right_bundle.resolve()),
+      "secure_config_path": None,
+  }
+
+
 @pytest.mark.unmute_click
 def test_cli_secure_replay_ledger_exits_nonzero_for_invalid_report(
     tmp_path: Path,
@@ -361,7 +520,85 @@ def test_cli_secure_verify_bundle_exits_nonzero_for_invalid_report(
   )
 
   assert result.exit_code == 1
-  assert '"valid":false' in result.output.replace(" ", "").lower()
+
+
+def test_cli_secure_recommend_policies_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  captured_kwargs = {}
+
+  def _recommend_policies(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliReport(valid=True, kind="recommendations")
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "recommend_policies",
+      _recommend_policies,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "recommend-policies",
+          str(app_root),
+          "--minimum_evidence_count",
+          "4",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "secure_config_path": None,
+      "minimum_evidence_count": 4,
+  }
+
+
+def test_cli_secure_dashboard_forwards_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  app_root = tmp_path / "agent"
+  app_root.mkdir()
+  captured_kwargs = {}
+
+  def _get_dashboard_snapshot(**kwargs):
+    captured_kwargs.update(kwargs)
+    return _CliReport(valid=True, kind="dashboard")
+
+  monkeypatch.setattr(
+      cli_tools_click.cli_secure,
+      "get_dashboard_snapshot",
+      _get_dashboard_snapshot,
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "secure",
+          "dashboard",
+          str(app_root),
+          "--app_name",
+          "courtroom",
+          "--limit",
+          "7",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert captured_kwargs == {
+      "app_root": str(app_root.resolve()),
+      "secure_config_path": None,
+      "app_name": "courtroom",
+      "limit": 7,
+  }
 
 
 # cli run

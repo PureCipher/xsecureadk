@@ -109,6 +109,7 @@ _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 
 TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
+TAG_SECURE = "Secure"
 
 _REGEX_PREFIX = "regex:"
 
@@ -1214,6 +1215,28 @@ class AdkWebServer:
     async def list_eval_results_legacy(app_name: str) -> list[str]:
       list_eval_results_response = await list_eval_results(app_name)
       return list_eval_results_response.eval_result_ids
+
+    @app.get(
+        "/apps/{app_name}/secure/dashboard",
+        response_model_exclude_none=True,
+        tags=[TAG_SECURE],
+    )
+    async def get_secure_dashboard(
+        app_name: str,
+        limit: int = Query(default=10, ge=1, le=100),
+    ):
+      """Returns a SecureADK dashboard snapshot for one loaded app."""
+      await self.get_runner_async(app_name)
+      builder = self.app_secure_runtime_builder_dict.get(app_name)
+      if builder is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"SecureADK is not configured for app `{app_name}`.",
+        )
+      return await builder.build_dashboard_snapshot(
+          app_name=app_name,
+          limit=limit,
+      )
 
     @app.get(
         "/apps/{app_name}/eval-sets",

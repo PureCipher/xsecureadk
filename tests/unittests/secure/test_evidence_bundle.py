@@ -15,20 +15,25 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_result import EvalSetResult
+from google.adk.secure import DeploymentAttestor
 from google.adk.secure import EvidenceBundleExporter
 from google.adk.secure import HmacKeyring
 from google.adk.secure import InMemoryLineageStore
 from google.adk.secure import InMemoryProvenanceLedger
+from google.adk.secure import InMemoryTrustStore
 from google.adk.secure import LineageTracker
 from google.adk.secure import load_evidence_bundle_file
 from google.adk.secure import SigningKey
+from google.adk.secure import TenantCryptoManager
 from google.adk.secure import TrustedEvaluatorIdentity
 from google.adk.secure import TrustedEvaluatorRegistry
 from google.adk.secure import TrustedEvaluatorService
+from google.adk.secure import TrustScorer
 
 
 def test_evidence_bundle_exporter_exports_and_verifies_invocation_bundle(
@@ -153,3 +158,66 @@ def test_evidence_bundle_exporter_exports_and_verifies_eval_bundle() -> None:
   assert bundle.eval_set_result_id == 'result-1'
   assert exporter.verify_bundle(bundle).valid
   assert bundle.payload['trustedEvaluatorSignatures']['evalSet'] is not None
+
+
+def test_evidence_bundle_exporter_includes_attestation_and_trust_report(
+    tmp_path: Path,
+) -> None:
+  ledger = InMemoryProvenanceLedger()
+  lineage = LineageTracker(store=InMemoryLineageStore())
+  keyring = HmacKeyring(
+      {'bundle-key': SigningKey.from_secret('bundle-secret', epoch=2)}
+  )
+  trust_scorer = TrustScorer(store=InMemoryTrustStore())
+  asyncio.run(
+      trust_scorer.record_signature_verification(
+          subject_type='deployment',
+          subject_id='courtroom',
+          tenant_id='tenant-a',
+          valid=True,
+          reason='Deployment attestation verified.',
+      )
+  )
+  attestation_source = tmp_path / 'agent'
+  attestation_source.mkdir()
+  (attestation_source / 'agent.py').write_text('root_agent = object()\n')
+  deployment_attestation = DeploymentAttestor(
+      keyring=keyring,
+      signing_key_id='bundle-key',
+  ).build_attestation(
+      app_name='courtroom',
+      deployment_target='cloud_run',
+      source_root=attestation_source,
+  )
+  exporter = EvidenceBundleExporter(
+      keyring=keyring,
+      signing_key_id='bundle-key',
+      ledger=ledger,
+      lineage_tracker=lineage,
+      deployment_attestation=deployment_attestation,
+      trust_report=asyncio.run(trust_scorer.generate_report()),
+      tenant_crypto_manager=TenantCryptoManager(enabled=True),
+  )
+
+  asyncio.run(
+      ledger.append(
+          event_type='model_response_signed',
+          actor='judge',
+          app_name='courtroom',
+          invocation_id='invocation-1',
+          payload={'signature': 'abc', 'tenantId': 'tenant-a'},
+      )
+  )
+
+  bundle = asyncio.run(
+      exporter.export_invocation_bundle(
+          invocation_id='invocation-1',
+          app_name='courtroom',
+      )
+  )
+
+  assert bundle.key_scope == 'tenant'
+  assert bundle.tenant_id == 'tenant-a'
+  assert bundle.payload['deploymentAttestation'] is not None
+  assert bundle.payload['trustReport']['score_count'] == 1
+  assert exporter.verify_bundle(bundle).valid

@@ -184,3 +184,59 @@ def test_run_live_uses_secure_runtime_wrapped_runner(
     _ = ws.receive_text()
 
   assert 'secure_runtime' in plugin_names
+
+
+def test_secure_dashboard_endpoint_returns_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+  app_root = tmp_path / 'courtroom'
+  app_root.mkdir()
+  (app_root / 'secureadk.yaml').write_text(
+      '\n'.join([
+          'signing_keys:',
+          '  judge-key:',
+          '    secret_env: JUDGE_SECRET',
+          'identities:',
+          '  - agent_name: judge',
+          '    key_id: judge-key',
+          '    roles: [judge]',
+          'policy:',
+          '  rules:',
+          '    - name: judge-read-only',
+          '      principals: [judge]',
+          "      tools: ['*']",
+          "      actions: ['*']",
+          'observability:',
+          '  enabled: true',
+          '  logging:',
+          '    enabled: true',
+          'policy_recommendations:',
+          '  enabled: true',
+      ]),
+      encoding='utf-8',
+  )
+  monkeypatch.setenv('JUDGE_SECRET', 'top-secret')
+
+  adk_web_server = AdkWebServer(
+      agent_loader=_DummyAgentLoader(app_root),
+      session_service=InMemorySessionService(),
+      memory_service=MagicMock(),
+      artifact_service=InMemoryArtifactService(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=str(tmp_path),
+  )
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+  client = TestClient(fast_api_app)
+
+  response = client.get('/apps/courtroom/secure/dashboard?limit=5')
+
+  assert response.status_code == 200
+  data = response.json()
+  assert data['app_name'] == 'courtroom'
+  assert data['secure_runtime_enabled'] is True
+  assert data['observability_sinks'] == ['LoggingSecureEventSink']

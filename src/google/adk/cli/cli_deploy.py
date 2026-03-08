@@ -806,6 +806,58 @@ def _load_agent_engine_secure_config(
   return config
 
 
+def _load_secure_runtime_builder_for_deployment(
+    *,
+    agent_folder: str,
+    secure_config: Optional[str],
+):
+  """Loads the SecureADK builder used for deployment staging, if configured."""
+  from .utils.secure_runtime_config import load_secure_runtime_builder
+
+  try:
+    return load_secure_runtime_builder(
+        agent_folder,
+        secure_config_path=secure_config,
+    )
+  except Exception as e:
+    raise click.ClickException(
+        f'Invalid SecureADK config for deployment packaging: {e}'
+    ) from e
+
+
+def _write_deployment_attestation(
+    *,
+    secure_runtime_builder,
+    agent_src_path: str,
+    app_name: str,
+    deployment_target: str,
+    metadata: Optional[dict[str, object]] = None,
+    explicit_paths: tuple[str | Path, ...] = (),
+) -> Optional[str]:
+  """Writes a deployment attestation into the staged app directory."""
+  if (
+      secure_runtime_builder is None
+      or secure_runtime_builder.deployment_attestor is None
+  ):
+    return None
+  attestation = secure_runtime_builder.deployment_attestor.build_attestation(
+      app_name=app_name,
+      deployment_target=deployment_target,
+      source_root=agent_src_path,
+      metadata=metadata,
+      explicit_paths=explicit_paths,
+  )
+  attestation_path = os.path.join(
+      agent_src_path,
+      secure_runtime_builder.deployment_attestor.attestation_file_name,
+  )
+  secure_runtime_builder.deployment_attestor.write_attestation(
+      attestation,
+      output_path=attestation_path,
+  )
+  return attestation_path
+
+
 def to_cloud_run(
     *,
     agent_folder: str,
@@ -879,6 +931,10 @@ def to_cloud_run(
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
+  secure_runtime_builder = _load_secure_runtime_builder_for_deployment(
+      agent_folder=agent_folder,
+      secure_config=secure_config,
+  )
 
   click.echo(f'Start generating Cloud Run source files in {temp_folder}')
 
@@ -944,6 +1000,22 @@ def to_cloud_run(
           dockerfile_content,
       )
     click.echo(f'Creating Dockerfile complete: {dockerfile_path}')
+    attestation_path = _write_deployment_attestation(
+        secure_runtime_builder=secure_runtime_builder,
+        agent_src_path=agent_src_path,
+        app_name=app_name,
+        deployment_target='cloud_run',
+        metadata={
+            'project': project,
+            'region': region,
+            'serviceName': service_name,
+            'adkVersion': adk_version,
+            'withUi': with_ui,
+        },
+        explicit_paths=(dockerfile_path,),
+    )
+    if attestation_path is not None:
+      click.echo(f'Created deployment attestation: {attestation_path}')
 
     # Deploy to Cloud Run
     click.echo('Deploying to Cloud Run...')
@@ -1149,6 +1221,10 @@ def to_agent_engine(
         ignore=ignore_patterns,
         dirs_exist_ok=True,
     )
+    secure_runtime_builder = _load_secure_runtime_builder_for_deployment(
+        agent_folder=agent_folder,
+        secure_config=secure_config,
+    )
     secure_runtime_config = _load_agent_engine_secure_config(
         agent_folder=agent_folder,
         secure_config=secure_config,
@@ -1342,6 +1418,23 @@ def to_agent_engine(
           )
       )
     click.echo(f'Created {adk_app_file}')
+    attestation_path = _write_deployment_attestation(
+        secure_runtime_builder=secure_runtime_builder,
+        agent_src_path=agent_src_path,
+        app_name=app_name,
+        deployment_target='agent_engine',
+        metadata={
+            'project': project,
+            'region': region,
+            'displayName': agent_config.get('display_name'),
+            'adkApp': adk_app,
+            'adkAppType': adk_app_type,
+            'traceToCloud': trace_to_cloud,
+            'expressMode': api_key is not None,
+        },
+    )
+    if attestation_path is not None:
+      click.echo(f'Created deployment attestation: {attestation_path}')
     click.echo('Files and dependencies resolved')
     if absolutize_imports:
       click.echo(
@@ -1447,6 +1540,10 @@ def to_gke(
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
+  secure_runtime_builder = _load_secure_runtime_builder_for_deployment(
+      agent_folder=agent_folder,
+      secure_config=secure_config,
+  )
 
   click.secho('STEP 1: Preparing build environment...', bold=True)
   click.echo(f'  - Using temporary directory: {temp_folder}')
@@ -1514,6 +1611,69 @@ def to_gke(
           dockerfile_content,
       )
     click.secho(f'✅ Dockerfile generated: {dockerfile_path}', fg='green')
+    image_name = f'gcr.io/{project}/{service_name}'
+    deployment_yaml_path = os.path.join(temp_folder, 'deployment.yaml')
+    deployment_yaml = f"""
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {service_name}
+  labels:
+    app.kubernetes.io/name: adk-agent
+    app.kubernetes.io/version: {adk_version}
+    app.kubernetes.io/instance: {service_name}
+    app.kubernetes.io/managed-by: adk-cli
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {service_name}
+  template:
+    metadata:
+      labels:
+        app: {service_name}
+        app.kubernetes.io/name: adk-agent
+        app.kubernetes.io/version: {adk_version}
+        app.kubernetes.io/instance: {service_name}
+        app.kubernetes.io/managed-by: adk-cli
+    spec:
+      containers:
+      - name: {service_name}
+        image: {image_name}
+        ports:
+        - containerPort: {port}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {service_name}
+spec:
+  type: LoadBalancer
+  selector:
+    app: {service_name}
+  ports:
+  - port: 80
+    targetPort: {port}
+"""
+    with open(deployment_yaml_path, 'w', encoding='utf-8') as f:
+      f.write(deployment_yaml)
+    attestation_path = _write_deployment_attestation(
+        secure_runtime_builder=secure_runtime_builder,
+        agent_src_path=agent_src_path,
+        app_name=app_name,
+        deployment_target='gke',
+        metadata={
+            'project': project,
+            'region': region,
+            'clusterName': cluster_name,
+            'serviceName': service_name,
+            'adkVersion': adk_version,
+            'withUi': with_ui,
+        },
+        explicit_paths=(dockerfile_path, deployment_yaml_path),
+    )
+    if attestation_path is not None:
+      click.echo(f'  - Created deployment attestation: {attestation_path}')
 
     # Build and push the Docker image
     click.secho(
@@ -1523,8 +1683,6 @@ def to_gke(
         '  (This may take a few minutes. Raw logs from gcloud will be shown'
         ' below.)'
     )
-    project = _resolve_project(project)
-    image_name = f'gcr.io/{project}/{service_name}'
     subprocess.run(
         [
             'gcloud',

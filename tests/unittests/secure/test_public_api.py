@@ -15,11 +15,15 @@
 from __future__ import annotations
 
 from google.adk import SecureRuntimeBuilder
+from google.adk.secure import DeploymentAttestor
 from google.adk.secure import EvidenceBundleExporter
 from google.adk.secure import GatewayExplanation
 from google.adk.secure import PolicyExplanation
+from google.adk.secure import SecureReplayDiffer
 from google.adk.secure import SecureRuntimeBuilder as SecureRuntimeBuilderFromSecure
 from google.adk.secure import SigningKey
+from google.adk.secure import TenantCryptoManager
+from google.adk.secure import TrustScorer
 
 
 def test_secure_runtime_builder_is_reexported() -> None:
@@ -31,3 +35,7 @@ def test_secure_package_reexports_new_secure_models() -> None:
   assert GatewayExplanation is not None
   assert PolicyExplanation is not None
   assert SigningKey is not None
+  assert DeploymentAttestor is not None
+  assert SecureReplayDiffer is not None
+  assert TenantCryptoManager is not None
+  assert TrustScorer is not None

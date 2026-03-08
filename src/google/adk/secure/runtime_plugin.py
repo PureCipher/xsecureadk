@@ -30,6 +30,8 @@ from ..tools.tool_context import ToolContext
 from .alert_sinks import BaseAnomalyAlertSink
 from .anomaly import AnomalyAlert
 from .anomaly import BaseAnomalyDetector
+from .attestation import DeploymentAttestation
+from .attestation import DeploymentAttestor
 from .capabilities import capability_state_key
 from .capabilities import CapabilityToken
 from .capabilities import CapabilityVault
@@ -41,8 +43,11 @@ from .isolation import TenantIsolationManager
 from .lineage import LineageTracker
 from .policies import AuthorizationRequest
 from .provenance import BaseProvenanceLedger
+from .recommendations import PolicyRecommender
 from .signing import HmacKeyring
 from .signing import payload_hash
+from .tenant_crypto import TenantCryptoManager
+from .trust import TrustScorer
 
 SECURE_METADATA_KEY = 'secureadk'
 
@@ -68,6 +73,11 @@ class SecureRuntimePlugin(BasePlugin):
       anomaly_alert_sink: BaseAnomalyAlertSink | None = None,
       lineage_tracker: LineageTracker | None = None,
       tenant_isolation_manager: TenantIsolationManager | None = None,
+      policy_recommender: PolicyRecommender | None = None,
+      deployment_attestation: DeploymentAttestation | None = None,
+      deployment_attestor: DeploymentAttestor | None = None,
+      trust_scorer: TrustScorer | None = None,
+      tenant_crypto_manager: TenantCryptoManager | None = None,
   ):
     super().__init__(name=name)
     self._identity_registry = identity_registry
@@ -84,6 +94,11 @@ class SecureRuntimePlugin(BasePlugin):
     self._anomaly_alert_sink = anomaly_alert_sink
     self._lineage_tracker = lineage_tracker
     self._tenant_isolation_manager = tenant_isolation_manager
+    self._policy_recommender = policy_recommender
+    self._deployment_attestation = deployment_attestation
+    self._deployment_attestor = deployment_attestor
+    self._trust_scorer = trust_scorer
+    self._tenant_crypto_manager = tenant_crypto_manager
     self._issued_capabilities: dict[tuple[str, str], CapabilityToken] = {}
 
   async def before_run_callback(
@@ -102,20 +117,20 @@ class SecureRuntimePlugin(BasePlugin):
         identity=identity,
     )
     if self._gateway is not None:
-      decision = self._gateway.authorize(
-          self._build_gateway_request(
-              operation='run',
-              resource_type='agent',
-              resource_name=invocation_context.agent.name,
-              app_name=invocation_context.session.app_name,
-              user_id=invocation_context.user_id,
-              session_id=invocation_context.session.id,
-              invocation_id=invocation_context.invocation_id,
-              identity=identity,
-              state=invocation_context.session.state,
-          )
+      request = self._build_gateway_request(
+          operation='run',
+          resource_type='agent',
+          resource_name=invocation_context.agent.name,
+          app_name=invocation_context.session.app_name,
+          user_id=invocation_context.user_id,
+          session_id=invocation_context.session.id,
+          invocation_id=invocation_context.invocation_id,
+          identity=identity,
+          state=invocation_context.session.state,
       )
+      decision = self._gateway.authorize(request)
       await self._record_gateway_decision(
+          request=request,
           decision=decision,
           actor=identity.subject if identity is not None else None,
           app_name=invocation_context.session.app_name,
@@ -127,6 +142,20 @@ class SecureRuntimePlugin(BasePlugin):
       )
       if not decision.allowed:
         raise PermissionError(decision.reason)
+    if self._deployment_attestation is not None:
+      verification = self._verify_deployment_attestation()
+      if self._deployment_attestor is not None:
+        await self._deployment_attestor.record_attestation(
+            self._deployment_attestation,
+            verified=verification.valid,
+        )
+      if self._trust_scorer is not None:
+        await self._trust_scorer.record_deployment_attestation(
+            attestation=self._deployment_attestation,
+            verified=verification.valid,
+        )
+      if not verification.valid:
+        raise PermissionError(verification.reason)
     if self._ledger is not None:
       await self._ledger.append(
           event_type='invocation_started',
@@ -241,6 +270,7 @@ class SecureRuntimePlugin(BasePlugin):
       if llm_response.content or llm_response.error_code:
         identity = self._resolve_identity(callback_context.agent_name)
         if identity is not None:
+          tenant_id = self._tenant_id(callback_context, identity)
           previous_event_hash = (
               payload_hash(
                   callback_context.session.events[-1].model_dump(
@@ -257,6 +287,7 @@ class SecureRuntimePlugin(BasePlugin):
               'appName': callback_context.session.app_name,
               'sessionId': callback_context.session.id,
               'invocationId': callback_context.invocation_id,
+              'tenantId': tenant_id,
               'previousEventHash': previous_event_hash,
               'response': llm_response.model_dump(
                   by_alias=True,
@@ -264,14 +295,25 @@ class SecureRuntimePlugin(BasePlugin):
                   mode='json',
               ),
           }
-          envelope = self._response_keyring.sign_value(
-              signed_payload,
-              key_id=identity.key_id,
+          envelope = (
+              self._response_keyring.sign_value(
+                  signed_payload,
+                  key_id=identity.key_id,
+              )
+              if self._tenant_crypto_manager is None
+              else self._tenant_crypto_manager.sign_value(
+                  keyring=self._response_keyring,
+                  value=signed_payload,
+                  key_id=identity.key_id,
+                  tenant_id=tenant_id,
+              )
           )
           secure_metadata = {
               'actor': identity.subject,
               'keyId': identity.key_id,
               'keyEpoch': envelope.key_epoch,
+              'keyScope': envelope.key_scope,
+              'tenantId': envelope.tenant_id,
               'payloadHash': envelope.payload_hash,
               'previousEventHash': previous_event_hash,
               'signature': envelope.signature,
@@ -352,24 +394,24 @@ class SecureRuntimePlugin(BasePlugin):
     action = self._tool_action(tool)
 
     if self._gateway is not None:
-      gateway_decision = self._gateway.authorize(
-          self._build_gateway_request(
-              operation='tool',
-              resource_type='tool',
-              resource_name=tool.name,
-              app_name=tool_context.session.app_name,
-              user_id=tool_context.user_id,
-              session_id=tool_context.session.id,
-              invocation_id=tool_context.invocation_id,
-              identity=identity,
-              state=tool_context.state,
-              extra_context={
-                  'action': action,
-                  'toolArgsHash': payload_hash(tool_args),
-              },
-          )
+      gateway_request = self._build_gateway_request(
+          operation='tool',
+          resource_type='tool',
+          resource_name=tool.name,
+          app_name=tool_context.session.app_name,
+          user_id=tool_context.user_id,
+          session_id=tool_context.session.id,
+          invocation_id=tool_context.invocation_id,
+          identity=identity,
+          state=tool_context.state,
+          extra_context={
+              'action': action,
+              'toolArgsHash': payload_hash(tool_args),
+          },
       )
+      gateway_decision = self._gateway.authorize(gateway_request)
       await self._record_gateway_decision(
+          request=gateway_request,
           decision=gateway_decision,
           actor=identity.subject if identity is not None else None,
           app_name=tool_context.session.app_name,
@@ -410,6 +452,10 @@ class SecureRuntimePlugin(BasePlugin):
         tool_context=tool_context,
     )
     decision = self._capability_vault.authorize(request)
+    await self._record_policy_decision(
+        request=request,
+        decision=decision,
+    )
     alerts = self._record_tool_alerts(
         request=request,
         decision_allowed=decision.allowed,
@@ -748,6 +794,7 @@ class SecureRuntimePlugin(BasePlugin):
   async def _record_gateway_decision(
       self,
       *,
+      request: GatewayRequest,
       decision,
       actor: str | None,
       app_name: str,
@@ -786,6 +833,36 @@ class SecureRuntimePlugin(BasePlugin):
           session_id=session_id,
           invocation_id=invocation_id,
           payload=payload,
+      )
+    if self._policy_recommender is not None:
+      await self._policy_recommender.record_gateway_decision(
+          request=request,
+          decision=decision,
+      )
+    if self._trust_scorer is not None:
+      await self._trust_scorer.record_gateway_decision(
+          request=request,
+          decision=decision,
+      )
+
+  async def _record_policy_decision(
+      self,
+      *,
+      request: AuthorizationRequest,
+      decision,
+  ) -> None:
+    if self._policy_recommender is None:
+      if self._trust_scorer is None:
+        return
+    if self._policy_recommender is not None:
+      await self._policy_recommender.record_policy_decision(
+          request=request,
+          decision=decision,
+      )
+    if self._trust_scorer is not None:
+      await self._trust_scorer.record_policy_decision(
+          request=request,
+          decision=decision,
       )
 
   async def _record_tool_authorization_lineage(
@@ -853,6 +930,8 @@ class SecureRuntimePlugin(BasePlugin):
     if not alerts:
       return
     for alert in alerts:
+      if self._trust_scorer is not None:
+        await self._trust_scorer.record_anomaly_alert(alert)
       if self._ledger is not None:
         await self._ledger.append(
             event_type='anomaly_detected',
@@ -886,6 +965,16 @@ class SecureRuntimePlugin(BasePlugin):
         )
     if self._anomaly_alert_sink is not None:
       await self._anomaly_alert_sink.emit_alerts(alerts)
+
+  def _verify_deployment_attestation(self):
+    if (
+        self._deployment_attestation is None
+        or self._deployment_attestor is None
+    ):
+      raise ValueError('Deployment attestation is not configured.')
+    return self._deployment_attestor.verify_attestation(
+        self._deployment_attestation
+    )
 
   async def _handle_tool_approval_requirement(
       self,

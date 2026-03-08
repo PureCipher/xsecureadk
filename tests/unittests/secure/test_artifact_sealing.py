@@ -17,8 +17,11 @@ from __future__ import annotations
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.secure.artifact_sealing import SEAL_METADATA_KEY
 from google.adk.secure.artifact_sealing import SealedArtifactService
+from google.adk.secure.isolation import TenantIsolationBinding
+from google.adk.secure.isolation import TenantIsolationManager
 from google.adk.secure.provenance import InMemoryProvenanceLedger
 from google.adk.secure.signing import HmacKeyring
+from google.adk.secure.tenant_crypto import TenantCryptoManager
 from google.genai import types
 import pytest
 
@@ -64,3 +67,41 @@ async def test_sealed_artifact_service_persists_and_verifies_seals():
 
   ledger_entries = await ledger.list_entries()
   assert ledger_entries[0].event_type == 'artifact_sealed'
+
+
+@pytest.mark.asyncio
+async def test_sealed_artifact_service_uses_tenant_scoped_signatures():
+  delegate = InMemoryArtifactService()
+  service = SealedArtifactService(
+      delegate=delegate,
+      keyring=HmacKeyring({'seal-key': 'artifact-secret'}),
+      signing_key_id='seal-key',
+      tenant_crypto_manager=TenantCryptoManager(
+          enabled=True,
+          require_tenant=True,
+          isolation_manager=TenantIsolationManager(
+              bindings=[
+                  TenantIsolationBinding(user_id='clerk', tenant_id='tenant-a')
+              ]
+          ),
+      ),
+  )
+
+  await service.save_artifact(
+      app_name='courtroom',
+      user_id='clerk',
+      session_id='session-1',
+      filename='evidence/report.txt',
+      artifact=types.Part(text='sealed-evidence'),
+  )
+
+  version_meta = await service.get_artifact_version(
+      app_name='courtroom',
+      user_id='clerk',
+      session_id='session-1',
+      filename='evidence/report.txt',
+  )
+  assert version_meta is not None
+  seal = version_meta.custom_metadata[SEAL_METADATA_KEY]
+  assert seal['key_scope'] == 'tenant'
+  assert seal['tenant_id'] == 'tenant-a'

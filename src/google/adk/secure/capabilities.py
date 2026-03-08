@@ -29,6 +29,7 @@ from .policies import BasePolicyEngine
 from .policies import PolicyDecision
 from .signing import HmacKeyring
 from .signing import payload_hash
+from .tenant_crypto import TenantCryptoManager
 
 _CAPABILITY_STATE_PREFIX = f'{State.TEMP_PREFIX}secureadk:capability:'
 
@@ -95,10 +96,12 @@ class CapabilityVault:
       policy_engine: BasePolicyEngine,
       keyring: HmacKeyring,
       default_ttl_seconds: int = 300,
+      tenant_crypto_manager: TenantCryptoManager | None = None,
   ):
     self.policy_engine = policy_engine
     self.keyring = keyring
     self.default_ttl_seconds = default_ttl_seconds
+    self.tenant_crypto_manager = tenant_crypto_manager
     self._consumed_token_ids: set[str] = set()
 
   def authorize(self, request: AuthorizationRequest) -> PolicyDecision:
@@ -135,10 +138,18 @@ class CapabilityVault:
         expires_at=issued_at + ttl_seconds,
         signature='',
     )
-    token.signature = self.keyring.sign_value(
-        self._token_payload(token),
-        key_id=token.key_id,
-    ).signature
+    if self.tenant_crypto_manager is None:
+      token.signature = self.keyring.sign_value(
+          self._token_payload(token),
+          key_id=token.key_id,
+      ).signature
+    else:
+      token.signature = self.tenant_crypto_manager.sign_value(
+          keyring=self.keyring,
+          value=self._token_payload(token),
+          key_id=token.key_id,
+          tenant_id=token.tenant_id,
+      ).signature
     return token
 
   def validate(
@@ -149,12 +160,24 @@ class CapabilityVault:
       allow_reuse: bool = False,
   ) -> CapabilityValidationResult:
     """Validates token integrity, scope, and replay constraints."""
-    if not self.keyring.verify_value(
-        self._token_payload(token),
-        key_id=token.key_id,
-        signature=token.signature,
-        signed_at=token.issued_at,
-    ):
+    valid_signature = (
+        self.keyring.verify_value(
+            self._token_payload(token),
+            key_id=token.key_id,
+            signature=token.signature,
+            signed_at=token.issued_at,
+        )
+        if self.tenant_crypto_manager is None
+        else self.tenant_crypto_manager.verify_value(
+            keyring=self.keyring,
+            value=self._token_payload(token),
+            key_id=token.key_id,
+            signature=token.signature,
+            signed_at=token.issued_at,
+            tenant_id=token.tenant_id,
+        )
+    )
+    if not valid_signature:
       return CapabilityValidationResult(
           valid=False,
           reason='Capability signature verification failed.',

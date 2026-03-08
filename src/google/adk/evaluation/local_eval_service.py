@@ -235,7 +235,8 @@ class LocalEvalService(BaseEvalService):
           )
           eval_set_result = (
               await self._trusted_evaluator_service.sign_eval_set_result(
-                  eval_set_result
+                  eval_set_result,
+                  app_name=inference_result.app_name,
               )
           )
           self._eval_set_results_manager.save_prebuilt_eval_set_result(
@@ -358,7 +359,8 @@ class LocalEvalService(BaseEvalService):
     if self._trusted_evaluator_service is not None:
       eval_case_result = (
           await self._trusted_evaluator_service.sign_eval_case_result(
-              eval_case_result
+              eval_case_result,
+              app_name=inference_result.app_name,
           )
       )
 

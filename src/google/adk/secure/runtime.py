@@ -25,18 +25,36 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from .alert_sinks import BaseAnomalyAlertSink
+from .alert_sinks import CompositeAnomalyAlertSink
+from .alert_sinks import InMemoryAnomalyAlertSink
 from .anomaly import BaseAnomalyDetector
 from .artifact_sealing import SealedArtifactService
+from .attestation import DeploymentAttestation
+from .attestation import DeploymentAttestor
 from .capabilities import CapabilityVault
+from .dashboard import build_secure_dashboard_snapshot
+from .dashboard import SecureDashboardSnapshot
 from .gateway import BaseAccessGateway
 from .identities import IdentityRegistry
 from .isolation import TenantIsolatedArtifactService
 from .isolation import TenantIsolatedSessionService
 from .isolation import TenantIsolationManager
 from .lineage import LineageTracker
+from .observability import BaseSecureEventSink
+from .observability import ObservableAnomalyAlertSink
+from .observability import ObservableLineageTracker
+from .observability import ObservableProvenanceLedger
+from .observability import RedactingSecureEventSink
+from .privacy import PrivacyAwareAnomalyAlertSink
+from .privacy import PrivacyAwareLineageTracker
+from .privacy import PrivacyAwareProvenanceLedger
+from .privacy import TelemetryRedactor
 from .provenance import BaseProvenanceLedger
+from .recommendations import PolicyRecommender
 from .runtime_plugin import SecureRuntimePlugin
 from .signing import HmacKeyring
+from .tenant_crypto import TenantCryptoManager
+from .trust import TrustScorer
 from .trusted_evaluators import TrustedEvaluatorService
 
 
@@ -80,10 +98,72 @@ class SecureRuntimeBuilder:
       lineage_tracker: LineageTracker | None = None,
       trusted_evaluator_service: TrustedEvaluatorService | None = None,
       tenant_isolation_manager: TenantIsolationManager | None = None,
+      secure_event_sink: BaseSecureEventSink | None = None,
+      telemetry_redactor: TelemetryRedactor | None = None,
+      policy_recommender: PolicyRecommender | None = None,
+      deployment_attestation: DeploymentAttestation | None = None,
+      deployment_attestor: DeploymentAttestor | None = None,
+      trust_scorer: TrustScorer | None = None,
+      tenant_crypto_manager: TenantCryptoManager | None = None,
   ):
+    self._telemetry_redactor = telemetry_redactor
+    wrapped_event_sink = secure_event_sink
+    if wrapped_event_sink is not None and telemetry_redactor is not None:
+      wrapped_event_sink = RedactingSecureEventSink(
+          delegate=wrapped_event_sink,
+          redactor=telemetry_redactor,
+      )
+
+    wrapped_ledger = ledger
+    if wrapped_ledger is not None and telemetry_redactor is not None:
+      wrapped_ledger = PrivacyAwareProvenanceLedger(
+          delegate=wrapped_ledger,
+          redactor=telemetry_redactor,
+      )
+    if wrapped_ledger is not None and wrapped_event_sink is not None:
+      wrapped_ledger = ObservableProvenanceLedger(
+          delegate=wrapped_ledger,
+          event_sink=wrapped_event_sink,
+      )
+
+    wrapped_lineage_tracker = lineage_tracker
+    if wrapped_lineage_tracker is not None and telemetry_redactor is not None:
+      wrapped_lineage_tracker = PrivacyAwareLineageTracker(
+          delegate=wrapped_lineage_tracker,
+          redactor=telemetry_redactor,
+      )
+    if wrapped_lineage_tracker is not None and wrapped_event_sink is not None:
+      wrapped_lineage_tracker = ObservableLineageTracker(
+          delegate=wrapped_lineage_tracker,
+          event_sink=wrapped_event_sink,
+      )
+
+    self._anomaly_alert_archive = InMemoryAnomalyAlertSink()
+    wrapped_anomaly_alert_sink = anomaly_alert_sink
+    if (
+        wrapped_anomaly_alert_sink is not None
+        and telemetry_redactor is not None
+    ):
+      wrapped_anomaly_alert_sink = PrivacyAwareAnomalyAlertSink(
+          delegate=wrapped_anomaly_alert_sink,
+          redactor=telemetry_redactor,
+      )
+    if wrapped_event_sink is not None:
+      wrapped_anomaly_alert_sink = ObservableAnomalyAlertSink(
+          event_sink=wrapped_event_sink,
+          delegate=wrapped_anomaly_alert_sink,
+      )
+    if anomaly_detector is not None or wrapped_anomaly_alert_sink is not None:
+      sink_list: list[BaseAnomalyAlertSink] = [self._anomaly_alert_archive]
+      if wrapped_anomaly_alert_sink is not None:
+        sink_list.append(wrapped_anomaly_alert_sink)
+      wrapped_anomaly_alert_sink = CompositeAnomalyAlertSink(sink_list)
+
     self._identity_registry = identity_registry
     self._capability_vault = capability_vault
-    self._ledger = ledger
+    if tenant_crypto_manager is not None:
+      self._capability_vault.tenant_crypto_manager = tenant_crypto_manager
+    self._ledger = wrapped_ledger
     self._response_keyring = response_keyring
     self._plugin_name = plugin_name
     self._tenant_state_key = tenant_state_key
@@ -96,10 +176,21 @@ class SecureRuntimeBuilder:
     self._artifact_actor = artifact_actor
     self._gateway = gateway
     self._anomaly_detector = anomaly_detector
-    self._anomaly_alert_sink = anomaly_alert_sink
-    self._lineage_tracker = lineage_tracker
+    self._anomaly_alert_sink = wrapped_anomaly_alert_sink
+    self._lineage_tracker = wrapped_lineage_tracker
     self._trusted_evaluator_service = trusted_evaluator_service
     self._tenant_isolation_manager = tenant_isolation_manager
+    self._secure_event_sink = wrapped_event_sink
+    self._policy_recommender = policy_recommender
+    self._deployment_attestation = deployment_attestation
+    self._deployment_attestor = deployment_attestor
+    self._trust_scorer = trust_scorer
+    self._tenant_crypto_manager = tenant_crypto_manager
+    if self._trusted_evaluator_service is not None:
+      self._trusted_evaluator_service._ledger = self._ledger  # pylint: disable=protected-access
+      self._trusted_evaluator_service._lineage_tracker = self._lineage_tracker  # pylint: disable=protected-access
+      self._trusted_evaluator_service._tenant_crypto_manager = tenant_crypto_manager  # pylint: disable=protected-access
+      self._trusted_evaluator_service._trust_scorer = trust_scorer  # pylint: disable=protected-access
 
   @property
   def ledger(self) -> BaseProvenanceLedger | None:
@@ -132,10 +223,71 @@ class SecureRuntimeBuilder:
     return self._anomaly_alert_sink
 
   @property
+  def anomaly_alert_archive(self) -> InMemoryAnomalyAlertSink:
+    return self._anomaly_alert_archive
+
+  @property
   def tenant_isolation_manager(
       self,
   ) -> TenantIsolationManager | None:
     return self._tenant_isolation_manager
+
+  @property
+  def telemetry_redactor(self) -> TelemetryRedactor | None:
+    return self._telemetry_redactor
+
+  @property
+  def secure_event_sink(self) -> BaseSecureEventSink | None:
+    return self._secure_event_sink
+
+  @property
+  def policy_recommender(self) -> PolicyRecommender | None:
+    return self._policy_recommender
+
+  @property
+  def deployment_attestation(self) -> DeploymentAttestation | None:
+    return self._deployment_attestation
+
+  @property
+  def deployment_attestor(self) -> DeploymentAttestor | None:
+    return self._deployment_attestor
+
+  @property
+  def trust_scorer(self) -> TrustScorer | None:
+    return self._trust_scorer
+
+  @property
+  def tenant_crypto_manager(self) -> TenantCryptoManager | None:
+    return self._tenant_crypto_manager
+
+  @property
+  def observability_sink_names(self) -> list[str]:
+    return self._sink_names(self._secure_event_sink)
+
+  async def build_dashboard_snapshot(
+      self,
+      *,
+      app_name: str | None = None,
+      limit: int = 10,
+  ) -> SecureDashboardSnapshot:
+    """Builds a SecureADK dashboard snapshot."""
+    return await build_secure_dashboard_snapshot(
+        builder=self,
+        app_name=app_name,
+        limit=limit,
+    )
+
+  def _sink_names(self, sink) -> list[str]:
+    if sink is None:
+      return []
+    if hasattr(sink, '_sinks'):
+      names = []
+      for child_sink in getattr(sink, '_sinks'):
+        names.extend(self._sink_names(child_sink))
+      return names
+    if hasattr(sink, '_delegate'):
+      return self._sink_names(getattr(sink, '_delegate'))
+    return [sink.__class__.__name__]
 
   def build_plugin(self) -> SecureRuntimePlugin:
     """Builds a SecureADK runtime plugin instance."""
@@ -155,6 +307,11 @@ class SecureRuntimeBuilder:
         anomaly_alert_sink=self._anomaly_alert_sink,
         lineage_tracker=self._lineage_tracker,
         tenant_isolation_manager=self._tenant_isolation_manager,
+        policy_recommender=self._policy_recommender,
+        deployment_attestation=self._deployment_attestation,
+        deployment_attestor=self._deployment_attestor,
+        trust_scorer=self._trust_scorer,
+        tenant_crypto_manager=self._tenant_crypto_manager,
     )
 
   def apply_to_app(self, app: App) -> App:
@@ -212,6 +369,11 @@ class SecureRuntimeBuilder:
         actor=self._artifact_actor,
         ledger=self._ledger,
         lineage_tracker=self._lineage_tracker,
+        tenant_crypto_manager=(
+            self._tenant_crypto_manager.with_session_service(session_service)
+            if self._tenant_crypto_manager is not None
+            else None
+        ),
     )
 
   def create_runner(
@@ -242,6 +404,13 @@ class SecureRuntimeBuilder:
       app = App(name=app_name, root_agent=agent)
     secure_app = self.apply_to_app(app)
     secure_session_service = self.wrap_session_service(session_service)
+    if (
+        self._tenant_crypto_manager is not None
+        and self._trusted_evaluator_service is not None
+    ):
+      self._trusted_evaluator_service._tenant_crypto_manager = self._tenant_crypto_manager.with_session_service(  # pylint: disable=protected-access
+          secure_session_service
+      )
     secure_artifact_service = self.wrap_artifact_service(
         artifact_service,
         session_service=secure_session_service,

@@ -110,11 +110,22 @@ extension points.
 ### What SecureADK Adds
 
 - Runtime identity binding for agents.
-- Policy checks before tool execution.
+- Policy and gateway checks before tool execution.
 - Short-lived capability issuance for allowed tool calls.
+- Optional approval-required flow for high-risk actions.
 - Signed model responses, including response-chain hashes in metadata.
 - Provenance records written to a ledger.
+- Versioned lineage records for prompts, tools, responses, artifacts, evals,
+  and deployment attestations.
+- Trusted evaluator signatures on eval outputs.
 - Optional artifact sealing through the artifact service wrapper.
+- Runtime anomaly detection plus logging/export/webhook alert sinks.
+- Secure observability sinks, telemetry redaction, and policy recommendations.
+- Deployment attestation for packaged runtimes.
+- Trust scoring for agents, tools, evaluators, and deployments.
+- Replay diffing across invocation history and exported evidence bundles.
+- Optional per-tenant signing scope for capabilities, responses, artifacts,
+  bundles, eval signatures, and deploy attestations.
 
 ### How It Fits Into ADK
 
@@ -123,12 +134,23 @@ At runtime, SecureADK layers onto the existing code path:
 1. ADK loads the agent or app normally.
 1. `SecureRuntimeBuilder` appends `SecureRuntimePlugin` to the app.
 1. The plugin binds agent names to registered identities.
+1. If configured, a dedicated gateway validates run-level and tool-level access
+   before the call reaches agent logic.
 1. Before a tool executes, SecureADK evaluates policy and either:
    - issues a capability token and allows the tool call, or
+   - requests approval, or
    - returns a structured denial result.
-1. After a model response, SecureADK signs the response metadata.
+1. After a model response, SecureADK signs the response metadata and records
+   provenance and lineage.
+1. Trusted evaluator signatures and trust updates are applied on eval paths.
 1. If artifact sealing is enabled, the artifact service is wrapped so saved
    artifacts include a seal.
+1. If tenant crypto is enabled, signing scopes switch from global keys to
+   tenant-derived keys.
+
+At deploy time, `adk deploy cloud_run`, `gke`, and `agent_engine` can bundle
+SecureADK config and emit a staged `.secureadk.attestation.json` that is later
+verified during runtime startup.
 
 This means you keep the standard ADK programming model while getting stronger
 runtime controls.
@@ -192,6 +214,65 @@ ledger:
   path: .adk/secureadk/demo-ledger.jsonl
 ```
 
+Advanced example:
+
+```yaml
+enabled: true
+signing_keys:
+  primary:
+    secret_env: SECUREADK_PRIMARY_SECRET
+identities:
+  - agent_name: judge
+    key_id: primary
+    roles: [judge]
+    tenant_id: tenant-a
+policy:
+  default_effect: deny
+  approval_risk_score_threshold: 0.8
+  default_approval_hint: "Judicial approval required."
+  rules:
+    - name: judge-read-evidence
+      principals: [judge]
+      roles: [judge]
+      tools: [sealed_evidence]
+      actions: [sealed_evidence]
+      tenant_ids: [tenant-a]
+gateway:
+  enabled: true
+  rules:
+    - name: judge-run-access
+      operations: [run]
+      resource_types: [agent]
+      principals: [judge]
+      tenant_ids: [tenant-a]
+lineage:
+  enabled: true
+trusted_evaluators:
+  enabled: true
+  evaluator_name: court-evaluator
+  signing_key_id: primary
+tenant_isolation:
+  enabled: true
+  bindings:
+    - user_id: alice
+      tenant_id: tenant-a
+tenant_crypto:
+  enabled: true
+  require_tenant: true
+deployment_attestation:
+  enabled: true
+  signing_key_id: primary
+trust_scoring:
+  enabled: true
+artifact_sealing:
+  enabled: true
+  signing_key_id: primary
+anomaly_detection:
+  enabled: true
+  logging:
+    enabled: true
+```
+
 #### Top-Level Fields
 
 | Field | Purpose | Default |
@@ -203,6 +284,17 @@ ledger:
 | `runtime` | Plugin behavior and state-key mapping. | built-in defaults |
 | `artifact_sealing` | Artifact seal configuration. | disabled |
 | `ledger` | Provenance ledger output location. | `.adk/secureadk/ledger.jsonl` |
+| `gateway` | Optional run/tool access gateway ahead of policy. | disabled |
+| `anomaly_detection` | Runtime anomaly thresholds and alert sinks. | disabled |
+| `lineage` | Versioned lineage storage. | disabled |
+| `trusted_evaluators` | Eval signing and verification settings. | disabled |
+| `telemetry_privacy` | Redaction/tokenization for secure telemetry. | disabled |
+| `observability` | Secure event export to log/file/webhook/OTEL/SIEM sinks. | disabled |
+| `policy_recommendations` | Capture and report least-privilege suggestions. | disabled |
+| `tenant_isolation` | User-to-tenant bindings for sessions and artifacts. | disabled |
+| `tenant_crypto` | Per-tenant signing scope derived from shared keys. | disabled |
+| `deployment_attestation` | Deploy-time manifest signing and startup verification. | disabled |
+| `trust_scoring` | Persistent trust score tracking. | disabled |
 
 #### `signing_keys`
 
@@ -296,6 +388,163 @@ SecureADK writes JSONL records to:
 .adk/secureadk/ledger.jsonl
 ```
 
+#### `gateway`
+
+Use `gateway` when you want a separate allow/deny layer before policy
+evaluation. This is useful for app-level or tenant-level access control where
+the request should be blocked before tool authorization logic runs.
+
+Important fields:
+
+- `enabled`: turns the gateway on.
+- `default_effect`: `allow` or `deny`.
+- `approval_risk_score_threshold`: convert high-risk gateway matches into
+  approval-required decisions.
+- `rules`: ordered `GatewayRule` entries with principals, operations,
+  resource types, app names, tenant IDs, and optional context filters.
+
+#### `anomaly_detection`
+
+`anomaly_detection` enables runtime anomaly and collusion heuristics.
+
+Important fields:
+
+- `repeated_denials_threshold`
+- `capability_burst_threshold`
+- `duplicate_response_agents_threshold`
+- `high_risk_score_threshold`
+- `block_severity_threshold`
+
+Alert sinks:
+
+- `logging.enabled`
+- `export.enabled` with optional `path`
+- `webhook.enabled` with `url`, `headers`, `timeout_seconds`, and optional
+  `signing_key_id`
+
+#### `lineage`
+
+When `lineage.enabled` is `true`, SecureADK writes versioned JSONL lineage
+records to `.adk/secureadk/lineage.jsonl` unless `lineage.path` is overridden.
+
+#### `trusted_evaluators`
+
+Trusted evaluators sign `InferenceResult`, `EvalCaseResult`, and
+`EvalSetResult` metadata. Key fields:
+
+- `enabled`
+- `evaluator_name`
+- `signing_key_id`
+- `trusted_evaluators`
+- `sign_inference_results`
+- `sign_eval_case_results`
+- `sign_eval_set_results`
+
+#### `telemetry_privacy`
+
+Use this to redact or tokenize secure telemetry before it reaches provenance,
+lineage, anomaly sinks, or observability sinks.
+
+Important fields:
+
+- `mode`: `redact` or `tokenize`
+- `replacement_text`
+- `field_names`
+- `redact_email`
+- `redact_phone`
+- `redact_ssn`
+- `redact_credit_card`
+- `tokenization_key_id` for tokenize mode
+
+#### `observability`
+
+Secure event export supports:
+
+- logging
+- JSONL export
+- webhook
+- OpenTelemetry
+- Splunk HEC
+- Datadog logs
+- BigQuery
+
+Enable `observability.enabled: true` before enabling any child sink.
+
+#### `policy_recommendations`
+
+Policy recommendations record runtime decisions and generate least-privilege
+reports from actual usage.
+
+Important fields:
+
+- `path`
+- `minimum_evidence_count`
+- `high_risk_threshold`
+
+#### `tenant_isolation`
+
+Tenant isolation namespaces sessions and artifacts by tenant. It does not
+create OS-level sandboxes; it enforces SecureADK-level separation inside ADK
+services.
+
+Important fields:
+
+- `require_tenant`
+- `enforce_identity_tenant_match`
+- `require_session_scoped_artifacts`
+- `bindings`: static `user_id -> tenant_id`
+
+#### `tenant_crypto`
+
+When enabled, SecureADK derives tenant-scoped signing keys from the configured
+shared keys. The tenant is resolved from session state, app namespaced tenant
+markers, explicit fallback values, user bindings, or loaded session state.
+
+Important fields:
+
+- `enabled`
+- `require_tenant`
+
+When `require_tenant` is `true`, signing fails if SecureADK cannot resolve a
+tenant for the operation.
+
+#### `deployment_attestation`
+
+Deployment attestation signs a manifest of staged source files and verifies it
+again when the runtime starts.
+
+Important fields:
+
+- `enabled`
+- `signing_key_id`
+- `actor`
+- `file_name`
+
+Default staged filename:
+
+```text
+.secureadk.attestation.json
+```
+
+Deploy commands generate this file automatically when deployment attestation is
+enabled in the bundled SecureADK config.
+
+#### `trust_scoring`
+
+Trust scoring persists a score history for:
+
+- agents
+- tools
+- evaluators
+- deployments
+
+Important fields:
+
+- `path`
+- `base_score`
+- `min_score`
+- `max_score`
+
 ### CLI Usage
 
 Run locally with autodiscovery:
@@ -340,6 +589,38 @@ For `adk deploy agent_engine`, SecureADK config is packaged into the generated
 deployment source, and the staged `requirements.txt` is pinned to the current
 `google-adk` version when needed so the deployed runtime matches the generated
 SecureADK wrapper code.
+
+Deployment attestation is generated during deploy packaging when
+`deployment_attestation.enabled: true` is present in the bundled SecureADK
+config.
+
+### Secure Operations CLI
+
+SecureADK also exposes audit, explainability, and verification commands:
+
+```bash
+adk secure verify-eval APP_ROOT EVAL_RESULT.json
+adk secure verify-lineage APP_ROOT
+adk secure replay-ledger APP_ROOT --show_entries
+adk secure verify-attestation APP_ROOT
+adk secure trust-report APP_ROOT
+adk secure explain-policy APP_ROOT REQUEST.json
+adk secure explain-gateway APP_ROOT REQUEST.json
+adk secure export-invocation-bundle APP_ROOT INVOCATION_ID
+adk secure export-eval-bundle APP_ROOT EVAL_RESULT.json
+adk secure verify-bundle APP_ROOT BUNDLE.json
+adk secure diff-invocations APP_ROOT INVOCATION_A INVOCATION_B
+adk secure diff-bundles APP_ROOT LEFT_BUNDLE.json RIGHT_BUNDLE.json
+adk secure recommend-policies APP_ROOT
+adk secure dashboard APP_ROOT
+```
+
+The most useful operational workflows are:
+
+- verify a staged deployment attestation after packaging or deployment
+- inspect trust score drift after anomalies, denials, or signature failures
+- export an invocation evidence bundle for audit handoff
+- replay and diff two invocations when behavior changes unexpectedly
 
 ### Direct Python Integration
 
@@ -399,15 +680,29 @@ With SecureADK enabled:
 - model responses include SecureADK metadata under `custom_metadata["secureadk"]`
 - denied tool calls return a structured denial payload instead of silently
   proceeding
+- approval-required actions pause and resume through the normal ADK resumable
+  execution path
 - provenance events are written to the configured ledger
+- lineage records are written when lineage tracking is enabled
 - sealed artifacts include seal metadata when artifact sealing is enabled
+- eval outputs can carry trusted evaluator signatures
+- anomaly alerts, trust score updates, and evidence bundles become available
+  when those features are enabled
+- deploy targets can carry a runtime-verifiable attestation manifest
+- signed metadata includes `keyScope` and `tenantId` when tenant crypto is
+  enabled
 
 ### Recommended Adoption Path
 
 1. Start with response signing and provenance only.
 1. Add identities for every active agent.
 1. Turn on deny-by-default policy and allow only the tools you want.
+1. Add lineage and trusted evaluators if you need reproducibility and auditable
+   evals.
 1. Enable artifact sealing for workflows that persist evidence or case files.
+1. Turn on tenant isolation and tenant crypto before multi-tenant rollout.
+1. Add deployment attestation and trust scoring for deployment and operations
+   monitoring.
 1. Move secrets out of inline config and into environment variables.
 
 For a minimal working example, see

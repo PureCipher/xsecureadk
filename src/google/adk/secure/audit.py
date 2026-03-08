@@ -32,6 +32,7 @@ from .lineage import LineageRecord
 from .provenance import FileProvenanceLedger
 from .provenance import LedgerEntry
 from .signing import payload_hash
+from .trust import TrustScorer
 from .trusted_evaluators import TRUSTED_EVALUATOR_METADATA_KEY
 from .trusted_evaluators import TrustedEvaluatorService
 
@@ -134,8 +135,10 @@ class SecureAuditVerifier:
       self,
       *,
       trusted_evaluator_service: TrustedEvaluatorService | None = None,
+      trust_scorer: TrustScorer | None = None,
   ):
     self._trusted_evaluator_service = trusted_evaluator_service
+    self._trust_scorer = trust_scorer
 
   def verify_inference_result(
       self, inference_result: InferenceResult
@@ -396,12 +399,27 @@ class SecureAuditVerifier:
         mode='json',
         exclude={'custom_metadata'},
     )
-    if not self._trusted_evaluator_service.verify_metadata(metadata, payload):
+    valid = self._trusted_evaluator_service.verify_metadata(metadata, payload)
+    if not valid:
       issues.append(
           AuditIssue(
               code='invalid_signature',
               message='Trusted evaluator signature verification failed.',
               subject=subject,
+          )
+      )
+    if self._trust_scorer is not None:
+      asyncio.run(
+          self._trust_scorer.record_signature_verification(
+              subject_type='evaluator',
+              subject_id=str(metadata.get('evaluatorName', 'unknown')),
+              valid=valid,
+              reason=(
+                  'Trusted evaluator signature verified.'
+                  if valid
+                  else 'Trusted evaluator signature verification failed.'
+              ),
+              tenant_id=metadata.get('tenantId'),
           )
       )
     return SignedResultVerification(

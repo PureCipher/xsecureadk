@@ -29,6 +29,7 @@ from .lineage import LineageTracker
 from .provenance import BaseProvenanceLedger
 from .signing import HmacKeyring
 from .signing import payload_hash
+from .tenant_crypto import TenantCryptoManager
 
 SEAL_METADATA_KEY = 'secureadk:seal'
 
@@ -44,6 +45,8 @@ class ArtifactSeal(BaseModel):
   actor: str
   key_id: str
   key_epoch: Optional[int] = None
+  key_scope: str = 'global'
+  tenant_id: Optional[str] = None
   version: int
   digest: str
   previous_digest: Optional[str] = None
@@ -82,6 +85,7 @@ class SealedArtifactService(BaseArtifactService):
       actor: str = 'secureadk-sealer',
       ledger: Optional[BaseProvenanceLedger] = None,
       lineage_tracker: LineageTracker | None = None,
+      tenant_crypto_manager: TenantCryptoManager | None = None,
   ):
     self._delegate = delegate
     self._keyring = keyring
@@ -89,6 +93,7 @@ class SealedArtifactService(BaseArtifactService):
     self._actor = actor
     self._ledger = ledger
     self._lineage_tracker = lineage_tracker
+    self._tenant_crypto_manager = tenant_crypto_manager
 
   async def save_artifact(
       self,
@@ -119,6 +124,11 @@ class SealedArtifactService(BaseArtifactService):
       previous_seal = self._extract_seal(latest_meta)
 
     digest = _artifact_digest(artifact)
+    tenant_id = await self._resolve_tenant_id(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+    )
     payload = self._seal_payload(
         app_name=app_name,
         user_id=user_id,
@@ -129,15 +139,27 @@ class SealedArtifactService(BaseArtifactService):
         previous_digest=(
             previous_seal.digest if previous_seal is not None else None
         ),
+        tenant_id=tenant_id,
     )
-    envelope = self._keyring.sign_value(
-        payload,
-        key_id=self._signing_key_id,
+    envelope = (
+        self._keyring.sign_value(
+            payload,
+            key_id=self._signing_key_id,
+        )
+        if self._tenant_crypto_manager is None
+        else self._tenant_crypto_manager.sign_value(
+            keyring=self._keyring,
+            value=payload,
+            key_id=self._signing_key_id,
+            tenant_id=tenant_id,
+        )
     )
     seal = ArtifactSeal(
         actor=self._actor,
         key_id=self._signing_key_id,
         key_epoch=envelope.key_epoch,
+        key_scope=envelope.key_scope,
+        tenant_id=envelope.tenant_id,
         version=version,
         digest=digest,
         previous_digest=(
@@ -173,6 +195,7 @@ class SealedArtifactService(BaseArtifactService):
               'version': saved_version,
               'digest': digest,
               'previousDigest': seal.previous_digest,
+              'tenantId': tenant_id,
           },
       )
     if self._lineage_tracker is not None:
@@ -190,6 +213,7 @@ class SealedArtifactService(BaseArtifactService):
               'previousDigest': seal.previous_digest,
               'payloadHash': seal.payload_hash,
               'signingKeyId': seal.key_id,
+              'tenantId': tenant_id,
           },
       )
     return saved_version
@@ -336,6 +360,7 @@ class SealedArtifactService(BaseArtifactService):
         version=seal.version,
         digest=seal.digest,
         previous_digest=seal.previous_digest,
+        tenant_id=seal.tenant_id,
     )
     if payload_hash(payload) != seal.payload_hash:
       return ArtifactVerificationResult(
@@ -343,12 +368,24 @@ class SealedArtifactService(BaseArtifactService):
           reason='Seal payload hash mismatch.',
           seal=seal,
       )
-    if not self._keyring.verify_value(
-        payload,
-        key_id=seal.key_id,
-        signature=seal.signature,
-        signed_at=seal.signed_at,
-    ):
+    valid_signature = (
+        self._keyring.verify_value(
+            payload,
+            key_id=seal.key_id,
+            signature=seal.signature,
+            signed_at=seal.signed_at,
+        )
+        if self._tenant_crypto_manager is None
+        else self._tenant_crypto_manager.verify_value(
+            keyring=self._keyring,
+            value=payload,
+            key_id=seal.key_id,
+            signature=seal.signature,
+            signed_at=seal.signed_at,
+            tenant_id=seal.tenant_id,
+        )
+    )
+    if not valid_signature:
       return ArtifactVerificationResult(
           valid=False,
           reason='Seal signature verification failed.',
@@ -381,6 +418,7 @@ class SealedArtifactService(BaseArtifactService):
       version: int,
       digest: str,
       previous_digest: Optional[str],
+      tenant_id: Optional[str],
   ) -> dict[str, object]:
     return {
         'appName': app_name,
@@ -391,4 +429,20 @@ class SealedArtifactService(BaseArtifactService):
         'digest': digest,
         'previousDigest': previous_digest,
         'actor': self._actor,
+        'tenantId': tenant_id,
     }
+
+  async def _resolve_tenant_id(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+  ) -> str | None:
+    if self._tenant_crypto_manager is None:
+      return None
+    return await self._tenant_crypto_manager.resolve_tenant_id(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+    )

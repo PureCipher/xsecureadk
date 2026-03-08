@@ -26,7 +26,9 @@ from google.adk.secure import capability_state_key
 from google.adk.secure import CapabilityVault
 from google.adk.secure import IdentityRegistry
 from google.adk.secure import InMemoryAnomalyAlertSink
+from google.adk.secure import InMemoryPolicyObservationStore
 from google.adk.secure import InMemoryProvenanceLedger
+from google.adk.secure import PolicyRecommender
 from google.adk.secure import PolicyRule
 from google.adk.secure import RuleBasedAnomalyDetector
 from google.adk.secure import SealedArtifactService
@@ -194,6 +196,46 @@ def test_secure_runtime_plugin_emits_anomaly_alerts_to_sink():
 
   assert alert_sink.alerts
   assert alert_sink.alerts[0].alert_type == 'high_risk_policy_decision'
+
+
+def test_secure_runtime_plugin_records_policy_recommendations():
+  responses = [
+      types.Part.from_function_call(name='sealed_evidence', args={}),
+      'finished',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  ledger = InMemoryProvenanceLedger()
+  keyring = HmacKeyring({'judge-key': 'judge-secret'})
+  recommender = PolicyRecommender(
+      store=InMemoryPolicyObservationStore(),
+      minimum_evidence_count=1,
+  )
+  plugin = SecureRuntimePlugin(
+      identity_registry=IdentityRegistry([
+          AgentIdentity(
+              agent_name='judge', key_id='judge-key', roles=('judge',)
+          )
+      ]),
+      capability_vault=CapabilityVault(
+          policy_engine=SimplePolicyEngine([]),
+          keyring=keyring,
+      ),
+      ledger=ledger,
+      policy_recommender=recommender,
+  )
+  agent = Agent(
+      name='judge',
+      model=mock_model,
+      tools=[_named_tool(_denied_tool)],
+  )
+
+  runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
+  runner.run('start trial')
+
+  observations = asyncio.run(recommender.list_observations())
+  assert len(observations) == 1
+  assert observations[0].source == 'policy'
+  assert observations[0].allowed is False
 
 
 def test_secure_runtime_builder_wraps_app_and_services():

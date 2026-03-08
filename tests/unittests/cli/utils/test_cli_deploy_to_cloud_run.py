@@ -243,7 +243,21 @@ def test_to_cloud_run_stages_secure_config(
   src_dir = agent_dir(include_requirements=False, include_env=False)
   build_dir = tmp_path / "build"
   secure_config = tmp_path / "secure-config.yaml"
-  secure_config.write_text("enabled: false\n", encoding="utf-8")
+  secure_config.write_text(
+      "\n".join((
+          "enabled: true",
+          "signing_keys:",
+          "  default:",
+          "    secret: test-secret",
+          "identities:",
+          "  - agent_name: dummy_agent",
+          "    key_id: default",
+          "deployment_attestation:",
+          "  enabled: true",
+          "  signing_key_id: default",
+      )),
+      encoding="utf-8",
+  )
 
   monkeypatch.setattr(subprocess, "run", _Recorder())
   monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_k: None)
@@ -272,7 +286,10 @@ def test_to_cloud_run_stages_secure_config(
   )
   staged_config = build_dir / "agents" / "agent" / ".secureadk.deploy.yaml"
   assert staged_config.is_file()
-  assert staged_config.read_text(encoding="utf-8") == "enabled: false\n"
+  staged_attestation = (
+      build_dir / "agents" / "agent" / ".secureadk.attestation.json"
+  )
+  assert staged_attestation.is_file()
 
 
 def test_to_cloud_run_cleans_temp_dir_on_failure(

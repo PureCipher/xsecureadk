@@ -75,3 +75,30 @@ def test_keyring_preserves_historical_verification_after_revocation() -> None:
   with mock.patch.object(platform_time, 'get_time', return_value=12.0):
     with pytest.raises(ValueError, match='has been revoked'):
       keyring.sign_value({'response': 'new'}, key_id='judge-key')
+
+
+def test_keyring_derives_tenant_scoped_signatures() -> None:
+  keyring = HmacKeyring({'judge-key': 'judge-secret'})
+
+  envelope = keyring.sign_value(
+      {'response': 'signed'},
+      key_id='judge-key',
+      tenant_id='tenant-a',
+  )
+
+  assert envelope.key_scope == 'tenant'
+  assert envelope.tenant_id == 'tenant-a'
+  assert keyring.verify_value(
+      {'response': 'signed'},
+      key_id='judge-key',
+      signature=envelope.signature,
+      signed_at=envelope.signed_at,
+      tenant_id='tenant-a',
+  )
+  assert not keyring.verify_value(
+      {'response': 'signed'},
+      key_id='judge-key',
+      signature=envelope.signature,
+      signed_at=envelope.signed_at,
+      tenant_id='tenant-b',
+  )

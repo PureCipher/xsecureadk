@@ -27,6 +27,11 @@ from .artifact_sealing import ArtifactSeal
 from .artifact_sealing import ArtifactVerificationResult
 from .artifact_sealing import SEAL_METADATA_KEY
 from .artifact_sealing import SealedArtifactService
+from .attestation import DEFAULT_ATTESTATION_FILE_NAME
+from .attestation import DeploymentAttestation
+from .attestation import DeploymentAttestationVerification
+from .attestation import DeploymentAttestor
+from .attestation import find_attestation_file
 from .audit import AuditIssue
 from .audit import EvalAuditReport
 from .audit import LedgerReplayReport
@@ -40,6 +45,8 @@ from .capabilities import CapabilityToken
 from .capabilities import CapabilityValidationResult
 from .capabilities import CapabilityVault
 from .capabilities import get_current_capability
+from .dashboard import DashboardSectionSummary
+from .dashboard import SecureDashboardSnapshot
 from .evidence_bundle import EvidenceBundle
 from .evidence_bundle import EvidenceBundleExporter
 from .evidence_bundle import EvidenceBundleVerification
@@ -63,6 +70,17 @@ from .lineage import FileLineageStore
 from .lineage import InMemoryLineageStore
 from .lineage import LineageRecord
 from .lineage import LineageTracker
+from .observability import BaseSecureEventSink
+from .observability import BigQuerySecureEventSink
+from .observability import CompositeSecureEventSink
+from .observability import DatadogSecureEventSink
+from .observability import FileSecureEventSink
+from .observability import InMemorySecureEventSink
+from .observability import LoggingSecureEventSink
+from .observability import OpenTelemetrySecureEventSink
+from .observability import SecureEvent
+from .observability import SplunkHecSecureEventSink
+from .observability import WebhookSecureEventSink
 from .policies import AllowAllPolicyEngine
 from .policies import AuthorizationRequest
 from .policies import BasePolicyEngine
@@ -72,10 +90,21 @@ from .policies import PolicyRule
 from .policies import PolicyRuleEvaluation
 from .policies import RuleConditionResult
 from .policies import SimplePolicyEngine
+from .privacy import TelemetryRedactor
 from .provenance import BaseProvenanceLedger
 from .provenance import FileProvenanceLedger
 from .provenance import InMemoryProvenanceLedger
 from .provenance import LedgerEntry
+from .recommendations import BasePolicyObservationStore
+from .recommendations import FilePolicyObservationStore
+from .recommendations import InMemoryPolicyObservationStore
+from .recommendations import PolicyObservation
+from .recommendations import PolicyRecommendation
+from .recommendations import PolicyRecommendationReport
+from .recommendations import PolicyRecommender
+from .replay_diff import ReplayDiffItem
+from .replay_diff import ReplayDiffReport
+from .replay_diff import SecureReplayDiffer
 from .runtime import SecureRuntimeBuilder
 from .runtime_plugin import SECURE_METADATA_KEY
 from .runtime_plugin import SecureRuntimePlugin
@@ -83,6 +112,14 @@ from .signing import HmacKeyring
 from .signing import payload_hash
 from .signing import SignatureEnvelope
 from .signing import SigningKey
+from .tenant_crypto import TenantCryptoManager
+from .trust import BaseTrustStore
+from .trust import FileTrustStore
+from .trust import InMemoryTrustStore
+from .trust import TrustEvent
+from .trust import TrustScore
+from .trust import TrustScorer
+from .trust import TrustScoreReport
 from .trusted_evaluators import TRUSTED_EVALUATOR_METADATA_KEY
 from .trusted_evaluators import TrustedEvaluatorIdentity
 from .trusted_evaluators import TrustedEvaluatorRegistry
@@ -93,27 +130,41 @@ __all__ = [
     'AllowAllAccessGateway',
     'AllowAllPolicyEngine',
     'AnomalyAlert',
-    'AuditIssue',
     'ArtifactSeal',
     'ArtifactVerificationResult',
+    'AuditIssue',
     'AuthorizationRequest',
     'BaseAccessGateway',
     'BaseAnomalyAlertSink',
     'BaseAnomalyDetector',
     'BaseLineageStore',
     'BasePolicyEngine',
+    'BasePolicyObservationStore',
     'BaseProvenanceLedger',
+    'BaseSecureEventSink',
+    'BaseTrustStore',
+    'BigQuerySecureEventSink',
     'CapabilityToken',
     'CapabilityValidationResult',
     'CapabilityVault',
     'CompositeAnomalyAlertSink',
+    'CompositeSecureEventSink',
+    'DashboardSectionSummary',
+    'DatadogSecureEventSink',
+    'DEFAULT_ATTESTATION_FILE_NAME',
+    'DeploymentAttestation',
+    'DeploymentAttestationVerification',
+    'DeploymentAttestor',
+    'EvalAuditReport',
     'EvidenceBundle',
     'EvidenceBundleExporter',
     'EvidenceBundleVerification',
-    'EvalAuditReport',
-    'FileLineageStore',
     'FileAnomalyAlertSink',
+    'FileLineageStore',
+    'FilePolicyObservationStore',
     'FileProvenanceLedger',
+    'FileSecureEventSink',
+    'FileTrustStore',
     'GatewayDecision',
     'GatewayExplanation',
     'GatewayRequest',
@@ -123,43 +174,66 @@ __all__ = [
     'IdentityRegistry',
     'InMemoryAnomalyAlertSink',
     'InMemoryLineageStore',
+    'InMemoryPolicyObservationStore',
     'InMemoryProvenanceLedger',
+    'InMemorySecureEventSink',
+    'InMemoryTrustStore',
     'LedgerEntry',
     'LedgerReplayReport',
-    'LineageRecord',
     'LineageAuditReport',
+    'LineageRecord',
     'LineageTracker',
     'LoggingAnomalyAlertSink',
+    'LoggingSecureEventSink',
+    'OpenTelemetrySecureEventSink',
     'PolicyDecision',
     'PolicyExplanation',
+    'PolicyObservation',
+    'PolicyRecommendation',
+    'PolicyRecommendationReport',
+    'PolicyRecommender',
     'PolicyRule',
     'PolicyRuleEvaluation',
+    'ReplayDiffItem',
+    'ReplayDiffReport',
     'RuleBasedAccessGateway',
     'RuleBasedAnomalyDetector',
     'RuleConditionResult',
     'SEAL_METADATA_KEY',
     'SECURE_METADATA_KEY',
+    'SecureAuditVerifier',
+    'SecureDashboardSnapshot',
+    'SecureEvent',
+    'SecureReplayDiffer',
     'SecureRuntimeBuilder',
-    'SealedArtifactService',
     'SecureRuntimePlugin',
-    'SigningKey',
+    'SealedArtifactService',
     'SignatureEnvelope',
+    'SigningKey',
     'SimplePolicyEngine',
+    'SplunkHecSecureEventSink',
     'TRUSTED_EVALUATOR_METADATA_KEY',
+    'TelemetryRedactor',
     'TenantIsolatedArtifactService',
     'TenantIsolatedSessionService',
+    'TenantCryptoManager',
     'TenantIsolationBinding',
     'TenantIsolationManager',
+    'TrustEvent',
+    'TrustScore',
+    'TrustScoreReport',
+    'TrustScorer',
     'TrustedEvaluatorIdentity',
     'TrustedEvaluatorRegistry',
     'TrustedEvaluatorService',
     'WebhookAnomalyAlertSink',
+    'WebhookSecureEventSink',
     'capability_state_key',
     'get_current_capability',
     'load_eval_set_result_file',
     'load_evidence_bundle_file',
     'load_ledger_entries_file',
     'load_lineage_records_file',
+    'find_attestation_file',
     'payload_hash',
-    'SecureAuditVerifier',
 ]

@@ -25,6 +25,7 @@ from pydantic import Field
 
 from ..evaluation.eval_result import EvalSetResult
 from ..platform import uuid as platform_uuid
+from .attestation import DeploymentAttestation
 from .audit import SecureAuditVerifier
 from .lineage import LineageRecord
 from .lineage import LineageTracker
@@ -32,6 +33,8 @@ from .provenance import BaseProvenanceLedger
 from .provenance import LedgerEntry
 from .signing import HmacKeyring
 from .signing import payload_hash
+from .tenant_crypto import TenantCryptoManager
+from .trust import TrustScoreReport
 from .trusted_evaluators import TRUSTED_EVALUATOR_METADATA_KEY
 
 
@@ -50,6 +53,8 @@ class EvidenceBundle(BaseModel):
   eval_set_result_id: str | None = None
   key_id: str
   key_epoch: int | None = None
+  key_scope: str = 'global'
+  tenant_id: str | None = None
   payload_hash: str
   signature: str
   signed_at: float
@@ -79,12 +84,18 @@ class EvidenceBundleExporter:
       ledger: BaseProvenanceLedger | None = None,
       lineage_tracker: LineageTracker | None = None,
       audit_verifier: SecureAuditVerifier | None = None,
+      deployment_attestation: DeploymentAttestation | None = None,
+      trust_report: TrustScoreReport | None = None,
+      tenant_crypto_manager: TenantCryptoManager | None = None,
   ):
     self._keyring = keyring
     self._signing_key_id = signing_key_id or keyring.default_signing_key_id()
     self._ledger = ledger
     self._lineage_tracker = lineage_tracker
     self._audit_verifier = audit_verifier
+    self._deployment_attestation = deployment_attestation
+    self._trust_report = trust_report
+    self._tenant_crypto_manager = tenant_crypto_manager
 
   async def export_invocation_bundle(
       self,
@@ -131,12 +142,31 @@ class EvidenceBundleExporter:
             for entry in ledger_entries
             if entry.event_type.startswith('approval_')
         ],
+        'deploymentAttestation': (
+            self._deployment_attestation.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode='json',
+            )
+            if self._deployment_attestation is not None
+            else None
+        ),
+        'trustReport': (
+            self._trust_report.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode='json',
+            )
+            if self._trust_report is not None
+            else None
+        ),
     }
     return self._build_bundle(
         bundle_type='invocation',
         app_name=app_name,
         session_id=session_id,
         invocation_id=invocation_id,
+        tenant_id=self._infer_tenant_id(ledger_entries, lineage_records),
         payload=payload,
     )
 
@@ -180,11 +210,30 @@ class EvidenceBundleExporter:
         ),
         'ledgerEntries': self._dump_models(ledger_entries),
         'lineageRecords': self._dump_models(lineage_records),
+        'deploymentAttestation': (
+            self._deployment_attestation.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode='json',
+            )
+            if self._deployment_attestation is not None
+            else None
+        ),
+        'trustReport': (
+            self._trust_report.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode='json',
+            )
+            if self._trust_report is not None
+            else None
+        ),
     }
     return self._build_bundle(
         bundle_type='eval',
         app_name=app_name,
         eval_set_result_id=eval_set_result.eval_set_result_id,
+        tenant_id=self._infer_tenant_id(ledger_entries, lineage_records),
         payload=payload,
     )
 
@@ -202,6 +251,7 @@ class EvidenceBundleExporter:
         key_id=bundle.key_id,
         signature=bundle.signature,
         signed_at=bundle.signed_at,
+        tenant_id=bundle.tenant_id,
     ):
       return EvidenceBundleVerification(
           valid=False,
@@ -308,8 +358,18 @@ class EvidenceBundleExporter:
       session_id: str | None = None,
       invocation_id: str | None = None,
       eval_set_result_id: str | None = None,
+      tenant_id: str | None = None,
   ) -> EvidenceBundle:
-    envelope = self._keyring.sign_value(payload, key_id=self._signing_key_id)
+    envelope = (
+        self._keyring.sign_value(payload, key_id=self._signing_key_id)
+        if self._tenant_crypto_manager is None
+        else self._tenant_crypto_manager.sign_value(
+            keyring=self._keyring,
+            value=payload,
+            key_id=self._signing_key_id,
+            tenant_id=tenant_id,
+        )
+    )
     return EvidenceBundle(
         bundle_id=str(platform_uuid.new_uuid()),
         bundle_type=bundle_type,
@@ -319,6 +379,8 @@ class EvidenceBundleExporter:
         eval_set_result_id=eval_set_result_id,
         key_id=self._signing_key_id,
         key_epoch=envelope.key_epoch,
+        key_scope=envelope.key_scope,
+        tenant_id=envelope.tenant_id,
         payload_hash=envelope.payload_hash,
         signature=envelope.signature,
         signed_at=envelope.signed_at,
@@ -354,6 +416,21 @@ class EvidenceBundleExporter:
         )
         for value in values
     ]
+
+  @staticmethod
+  def _infer_tenant_id(
+      ledger_entries: Sequence[LedgerEntry],
+      lineage_records: Sequence[LineageRecord],
+  ) -> str | None:
+    for entry in ledger_entries:
+      tenant_id = entry.payload.get('tenantId')
+      if tenant_id is not None:
+        return tenant_id
+    for record in lineage_records:
+      tenant_id = record.payload.get('tenantId')
+      if tenant_id is not None:
+        return tenant_id
+    return None
 
 
 def load_evidence_bundle_file(path: str | Path) -> EvidenceBundle:

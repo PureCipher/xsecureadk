@@ -84,6 +84,8 @@ class SignatureEnvelope(BaseModel):
   algorithm: str = 'hmac-sha256'
   key_id: str
   key_epoch: Optional[int] = None
+  key_scope: str = 'global'
+  tenant_id: Optional[str] = None
   payload_hash: str
   signature: str
   signed_at: float
@@ -141,9 +143,15 @@ class HmacKeyring:
         for key_id, key_value in secrets_by_key_id.items()
     }
 
-  def sign_value(self, value: Any, *, key_id: str) -> SignatureEnvelope:
+  def sign_value(
+      self,
+      value: Any,
+      *,
+      key_id: str,
+      tenant_id: str | None = None,
+  ) -> SignatureEnvelope:
     """Signs a structured value with the requested key."""
-    key = self._keys_by_id.get(key_id)
+    key = self._resolve_key(key_id=key_id, tenant_id=tenant_id)
     if key is None:
       raise KeyError(f'Unknown signing key: {key_id}')
     self._ensure_key_signable(key_id=key_id, key=key)
@@ -152,6 +160,8 @@ class HmacKeyring:
     return SignatureEnvelope(
         key_id=key_id,
         key_epoch=key.epoch,
+        key_scope='tenant' if tenant_id else 'global',
+        tenant_id=tenant_id,
         payload_hash=hashlib.sha256(payload).hexdigest(),
         signature=signature,
         signed_at=platform_time.get_time(),
@@ -164,9 +174,10 @@ class HmacKeyring:
       key_id: str,
       signature: str,
       signed_at: float | None = None,
+      tenant_id: str | None = None,
   ) -> bool:
     """Verifies a signature for a structured value."""
-    key = self._keys_by_id.get(key_id)
+    key = self._resolve_key(key_id=key_id, tenant_id=tenant_id)
     if key is None:
       return False
     verification_time = (
@@ -188,9 +199,11 @@ class HmacKeyring:
         update={'revoked_at': revoked_at or platform_time.get_time()}
     )
 
-  def get_key(self, key_id: str) -> SigningKey | None:
+  def get_key(
+      self, key_id: str, *, tenant_id: str | None = None
+  ) -> SigningKey | None:
     """Returns signing key metadata by key id."""
-    return self._keys_by_id.get(key_id)
+    return self._resolve_key(key_id=key_id, tenant_id=tenant_id)
 
   def default_signing_key_id(self) -> str:
     """Returns the newest active signing key id."""
@@ -211,6 +224,26 @@ class HmacKeyring:
     """Returns all known key ids."""
     return tuple(self._keys_by_id)
 
+  def derive_tenant_key(
+      self, *, key_id: str, tenant_id: str
+  ) -> SigningKey | None:
+    """Returns a tenant-derived signing key without mutating the keyring."""
+    base_key = self._keys_by_id.get(key_id)
+    if base_key is None:
+      return None
+    derived_secret = hmac.new(
+        base_key.secret,
+        f'secureadk-tenant-key:{tenant_id}:{key_id}'.encode('utf-8'),
+        hashlib.sha256,
+    ).digest()
+    return SigningKey(
+        secret=derived_secret,
+        epoch=base_key.epoch,
+        not_before=base_key.not_before,
+        not_after=base_key.not_after,
+        revoked_at=base_key.revoked_at,
+    )
+
   def _ensure_key_signable(self, *, key_id: str, key: SigningKey) -> None:
     now = platform_time.get_time()
     if key.not_before is not None and now < key.not_before:
@@ -221,6 +254,13 @@ class HmacKeyring:
       raise ValueError(f'Signing key {key_id!r} has expired.')
     if key.revoked_at is not None and now >= key.revoked_at:
       raise ValueError(f'Signing key {key_id!r} has been revoked.')
+
+  def _resolve_key(
+      self, *, key_id: str, tenant_id: str | None = None
+  ) -> SigningKey | None:
+    if tenant_id is None:
+      return self._keys_by_id.get(key_id)
+    return self.derive_tenant_key(key_id=key_id, tenant_id=tenant_id)
 
   @staticmethod
   def _is_signing_time_valid(

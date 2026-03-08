@@ -548,6 +548,89 @@ def cli_secure_replay_ledger(
     raise click.exceptions.Exit(1)
 
 
+@secure.command("verify-attestation", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for verification.",
+)
+@click.option(
+    "--attestation_path",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit deployment attestation JSON file to verify.",
+)
+@click.option(
+    "--source_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+    help="Optional. Source tree to hash when verifying component contents.",
+)
+def cli_secure_verify_attestation(
+    app_root: str,
+    secure_config: Optional[str] = None,
+    attestation_path: Optional[str] = None,
+    source_root: Optional[str] = None,
+) -> None:
+  """Verify a SecureADK deployment attestation file."""
+  try:
+    report = cli_secure.verify_attestation(
+        app_root=app_root,
+        secure_config_path=secure_config,
+        attestation_path=attestation_path,
+        source_root=source_root,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+  if not report.valid:
+    raise click.exceptions.Exit(1)
+
+
+@secure.command("trust-report", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for reporting.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Optional. Number of trust scores and recent events to include.",
+)
+def cli_secure_trust_report(
+    app_root: str,
+    secure_config: Optional[str] = None,
+    limit: int = 20,
+) -> None:
+  """Generate a SecureADK trust score report."""
+  try:
+    report = cli_secure.get_trust_report(
+        app_root=app_root,
+        secure_config_path=secure_config,
+        limit=limit,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+
+
 @secure.command("explain-policy", cls=HelpfulCommand)
 @click.argument(
     "app_root",
@@ -738,6 +821,160 @@ def cli_secure_verify_bundle(
   click.echo(report.model_dump_json(indent=2, exclude_none=True))
   if not report.valid:
     raise click.exceptions.Exit(1)
+
+
+@secure.command("diff-invocations", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.argument("left_invocation_id", type=str)
+@click.argument("right_invocation_id", type=str)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for diffing.",
+)
+def cli_secure_diff_invocations(
+    app_root: str,
+    left_invocation_id: str,
+    right_invocation_id: str,
+    secure_config: Optional[str] = None,
+) -> None:
+  """Diff two SecureADK invocation histories from ledger and lineage."""
+  try:
+    report = cli_secure.diff_invocations(
+        app_root=app_root,
+        left_invocation_id=left_invocation_id,
+        right_invocation_id=right_invocation_id,
+        secure_config_path=secure_config,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+  if not report.valid:
+    raise click.exceptions.Exit(1)
+
+
+@secure.command("diff-bundles", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.argument(
+    "left_bundle_file",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+)
+@click.argument(
+    "right_bundle_file",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for diffing.",
+)
+def cli_secure_diff_bundles(
+    app_root: str,
+    left_bundle_file: str,
+    right_bundle_file: str,
+    secure_config: Optional[str] = None,
+) -> None:
+  """Diff two persisted SecureADK evidence bundles."""
+  try:
+    report = cli_secure.diff_bundle_files(
+        app_root=app_root,
+        left_bundle_path=left_bundle_file,
+        right_bundle_path=right_bundle_file,
+        secure_config_path=secure_config,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+  if not report.valid:
+    raise click.exceptions.Exit(1)
+
+
+@secure.command("recommend-policies", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for reporting.",
+)
+@click.option(
+    "--minimum_evidence_count",
+    type=int,
+    default=None,
+    help="Optional. Override the minimum observation count per recommendation.",
+)
+def cli_secure_recommend_policies(
+    app_root: str,
+    secure_config: Optional[str] = None,
+    minimum_evidence_count: Optional[int] = None,
+) -> None:
+  """Generate SecureADK policy recommendations from runtime observations."""
+  try:
+    report = cli_secure.recommend_policies(
+        app_root=app_root,
+        secure_config_path=secure_config,
+        minimum_evidence_count=minimum_evidence_count,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(report.model_dump_json(indent=2, exclude_none=True))
+
+
+@secure.command("dashboard", cls=HelpfulCommand)
+@click.argument(
+    "app_root",
+    type=click.Path(
+        exists=True, file_okay=False, dir_okay=True, resolve_path=True
+    ),
+)
+@click.option(
+    "--secure_config",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help="Optional. Explicit SecureADK config file to use for the dashboard.",
+)
+@click.option("--app_name", type=str, help="Optional. App name for display.")
+@click.option(
+    "--limit",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Optional. Number of recent records to include in the snapshot.",
+)
+def cli_secure_dashboard(
+    app_root: str,
+    secure_config: Optional[str] = None,
+    app_name: Optional[str] = None,
+    limit: int = 10,
+) -> None:
+  """Build a SecureADK dashboard snapshot for CLI inspection."""
+  try:
+    snapshot = cli_secure.get_dashboard_snapshot(
+        app_root=app_root,
+        secure_config_path=secure_config,
+        app_name=app_name,
+        limit=limit,
+    )
+  except Exception as e:  # pragma: no cover - exercised in tests.
+    click.secho(f"Error: {e}", fg="red", err=True)
+    raise click.exceptions.Exit(1) from e
+  click.echo(snapshot.model_dump_json(indent=2, exclude_none=True))
 
 
 @main.command("create", cls=HelpfulCommand)

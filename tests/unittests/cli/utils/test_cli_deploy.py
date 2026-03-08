@@ -403,6 +403,9 @@ def test_to_agent_engine_stages_secure_config(
           "  - agent_name: dummy_agent",
           "    key_id: default",
           "    tenant_id: tenant-1",
+          "deployment_attestation:",
+          "  enabled: true",
+          "  signing_key_id: default",
           "artifact_sealing:",
           "  enabled: true",
           "  signing_key_id: default",
@@ -426,6 +429,8 @@ def test_to_agent_engine_stages_secure_config(
   assert staged_config.read_text(encoding="utf-8") == secure_config.read_text(
       encoding="utf-8"
   )
+  staged_attestation = tmp_dir / ".secureadk.attestation.json"
+  assert staged_attestation.is_file()
 
   content = (tmp_dir / "my_adk_app.py").read_text(encoding="utf-8")
   assert "load_secure_runtime_builder" in content
@@ -636,7 +641,21 @@ def test_to_gke_stages_secure_config(
   src_dir = agent_dir(False, False)
   build_dir = tmp_path / "build"
   secure_config = tmp_path / "secure-config.yaml"
-  secure_config.write_text("enabled: false\n", encoding="utf-8")
+  secure_config.write_text(
+      "\n".join((
+          "enabled: true",
+          "signing_keys:",
+          "  default:",
+          "    secret: test-secret",
+          "identities:",
+          "  - agent_name: dummy_agent",
+          "    key_id: default",
+          "deployment_attestation:",
+          "  enabled: true",
+          "  signing_key_id: default",
+      )),
+      encoding="utf-8",
+  )
 
   def mock_subprocess_run(*args, **kwargs):
     del kwargs
@@ -672,7 +691,10 @@ def test_to_gke_stages_secure_config(
   )
   staged_config = build_dir / "agents" / "agent" / ".secureadk.deploy.yaml"
   assert staged_config.is_file()
-  assert staged_config.read_text(encoding="utf-8") == "enabled: false\n"
+  staged_attestation = (
+      build_dir / "agents" / "agent" / ".secureadk.attestation.json"
+  )
+  assert staged_attestation.is_file()
 
 
 # _validate_agent_import tests
