@@ -1,0 +1,28 @@
+enabled: true
+signing_keys:
+  dev-key:
+    secret: change-me-for-dev-only
+identities:
+  - agent_name: secure_hello_agent
+    key_id: dev-key
+    roles: [case_writer]
+policy:
+  default_effect: deny
+  default_capability_ttl_seconds: 300
+  rules:
+    - name: allow-record-evidence
+      principals: [secure_hello_agent]
+      roles: [case_writer]
+      tools: [record_evidence]
+      actions: [record_evidence]
+runtime:
+  plugin_name: secure_runtime
+  tenant_state_key: tenant_id
+  case_state_key: case_id
+  enforce_agent_identity: true
+  sign_model_responses: true
+  sign_partial_responses: false
+artifact_sealing:
+  enabled: false
+ledger:
+  path: .adk/secureadk/demo-ledger.jsonl

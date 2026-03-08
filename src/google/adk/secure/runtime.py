@@ -19,9 +19,7 @@ from typing import Optional
 from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
-from ..auth.credential_service.base_credential_service import (
-    BaseCredentialService,
-)
+from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
@@ -94,7 +92,9 @@ class SecureRuntimeBuilder:
           'App already contains a plugin named '
           f'{self._plugin_name!r}; refusing to add SecureADK twice.'
       )
-    return app.model_copy(update={'plugins': [*app.plugins, self.build_plugin()]})
+    return app.model_copy(
+        update={'plugins': [*app.plugins, self.build_plugin()]}
+    )
 
   def wrap_artifact_service(
       self,

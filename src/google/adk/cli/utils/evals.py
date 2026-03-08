@@ -67,9 +67,7 @@ def create_gcs_eval_managers_from_uri(
       ValueError: If the eval_storage_uri is not supported.
   """
   if eval_storage_uri.startswith('gs://'):
-    from ...evaluation.gcs_eval_set_results_manager import (
-        GcsEvalSetResultsManager,
-    )
+    from ...evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
     from ...evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
 
     gcs_bucket = eval_storage_uri.split('://')[1]

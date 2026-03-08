@@ -19,9 +19,7 @@ from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
-from google.adk.artifacts.in_memory_artifact_service import (
-    InMemoryArtifactService,
-)
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.adk_web_server import AdkWebServer
 from google.adk.secure.artifact_sealing import SEAL_METADATA_KEY
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -100,9 +98,10 @@ def test_save_artifact_uses_secure_artifact_wrapper(
       '/apps/courtroom/users/user/sessions/session/artifacts',
       json={
           'filename': 'sealed.txt',
-          'artifact': types.Part(text='sealed evidence').model_dump(
-              by_alias=True,
-              exclude_none=True,
+          'artifact': (
+              types.Part(
+                  text='sealed evidence'
+              ).model_dump(by_alias=True, exclude_none=True,)
           ),
       },
   )

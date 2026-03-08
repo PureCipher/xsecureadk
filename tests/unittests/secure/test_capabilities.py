@@ -23,16 +23,14 @@ from google.adk.secure.signing import HmacKeyring
 
 def test_capability_vault_issues_and_consumes_token():
   keyring = HmacKeyring({'judge-key': 'top-secret'})
-  engine = SimplePolicyEngine(
-      [
-          PolicyRule(
-              name='judge-may-read-evidence',
-              principals=('judge',),
-              tools=('sealed_evidence',),
-              actions=('read',),
-          )
-      ]
-  )
+  engine = SimplePolicyEngine([
+      PolicyRule(
+          name='judge-may-read-evidence',
+          principals=('judge',),
+          tools=('sealed_evidence',),
+          actions=('read',),
+      )
+  ])
   vault = CapabilityVault(policy_engine=engine, keyring=keyring)
   request = AuthorizationRequest(
       agent_name='judge',
@@ -64,16 +62,14 @@ def test_capability_vault_issues_and_consumes_token():
 
 def test_capability_vault_rejects_requests_without_matching_policy():
   keyring = HmacKeyring({'juror-key': 'top-secret'})
-  engine = SimplePolicyEngine(
-      [
-          PolicyRule(
-              name='judge-only',
-              principals=('judge',),
-              tools=('sealed_evidence',),
-              actions=('read',),
-          )
-      ]
-  )
+  engine = SimplePolicyEngine([
+      PolicyRule(
+          name='judge-only',
+          principals=('judge',),
+          tools=('sealed_evidence',),
+          actions=('read',),
+      )
+  ])
   vault = CapabilityVault(policy_engine=engine, keyring=keyring)
   request = AuthorizationRequest(
       agent_name='juror',

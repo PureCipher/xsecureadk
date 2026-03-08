@@ -180,9 +180,9 @@ async def test_run_input_file_outputs(
 async def test_run_input_file_enables_secure_runtime_from_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  app_root = tmp_path / 'courtroom'
+  app_root = tmp_path / "courtroom"
   app_root.mkdir()
-  (app_root / 'secureadk.yaml').write_text(dedent("""
+  (app_root / "secureadk.yaml").write_text(dedent("""
     signing_keys:
       judge-key:
         secret_env: JUDGE_SECRET
@@ -240,8 +240,12 @@ async def test_run_input_file_enables_secure_runtime_from_config(
       app_root=app_root,
   )
 
-  assert any(plugin.name == "secure_runtime" for plugin in captured["app"].plugins)
-  assert captured["artifact_service"].__class__.__name__ == "SealedArtifactService"
+  assert any(
+      plugin.name == "secure_runtime" for plugin in captured["app"].plugins
+  )
+  assert (
+      captured["artifact_service"].__class__.__name__ == "SealedArtifactService"
+  )
 
 
 # _run_cli (input_file branch)

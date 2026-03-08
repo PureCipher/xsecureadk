@@ -131,8 +131,8 @@ def test_cli_create_cmd_invokes_run_cmd(
 # cli run
 @pytest.mark.parametrize(
     (
-        'cli_args,expected_session_uri,expected_artifact_uri,'
-        'expected_memory_uri,expected_secure_config'
+        "cli_args,expected_session_uri,expected_artifact_uri,"
+        "expected_memory_uri,expected_secure_config"
     ),
     [
         pytest.param(
@@ -183,7 +183,9 @@ def test_cli_run_service_uris(
   (agent_dir / "__init__.py").touch()
   (agent_dir / "agent.py").touch()
   if expected_secure_config is not None:
-    Path(expected_secure_config).write_text("enabled: false\n", encoding="utf-8")
+    Path(expected_secure_config).write_text(
+        "enabled: false\n", encoding="utf-8"
+    )
 
   # Capture the coroutine's locals before closing it
   captured_locals = []
@@ -212,9 +214,10 @@ def test_cli_run_service_uris(
   if expected_secure_config is None:
     assert coro_locals.get("secure_config") is None
   else:
-    assert Path(coro_locals["secure_config"]) == Path(
-        expected_secure_config
-    ).resolve()
+    assert (
+        Path(coro_locals["secure_config"])
+        == Path(expected_secure_config).resolve()
+    )
   assert coro_locals["agent_folder_name"] == "agent"
 
 

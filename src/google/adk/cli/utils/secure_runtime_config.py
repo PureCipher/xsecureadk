@@ -29,13 +29,13 @@ import yaml
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
 from ...artifacts.base_artifact_service import BaseArtifactService
+from ...secure.capabilities import CapabilityVault
 from ...secure.identities import AgentIdentity
 from ...secure.identities import IdentityRegistry
 from ...secure.policies import PolicyRule
 from ...secure.policies import SimplePolicyEngine
-from ...secure.runtime import SecureRuntimeBuilder
-from ...secure.capabilities import CapabilityVault
 from ...secure.provenance import FileProvenanceLedger
+from ...secure.runtime import SecureRuntimeBuilder
 from ...secure.signing import HmacKeyring
 from ...utils.env_utils import is_env_enabled
 
@@ -63,9 +63,7 @@ class _SigningKeyConfig(BaseModel):
   @model_validator(mode='after')
   def _validate_source(self) -> _SigningKeyConfig:
     if bool(self.secret) == bool(self.secret_env):
-      raise ValueError(
-          'Exactly one of secret or secret_env must be provided.'
-      )
+      raise ValueError('Exactly one of secret or secret_env must be provided.')
     return self
 
   def resolve_secret(self) -> str:
@@ -168,7 +166,9 @@ def resolve_loaded_app_root(
   candidates = []
   if isinstance(agent_or_app, App):
     candidates.append(getattr(agent_or_app, '_adk_origin_path', None))
-    candidates.append(getattr(agent_or_app.root_agent, '_adk_origin_path', None))
+    candidates.append(
+        getattr(agent_or_app.root_agent, '_adk_origin_path', None)
+    )
   else:
     candidates.append(getattr(agent_or_app, '_adk_origin_path', None))
 
@@ -194,9 +194,7 @@ def resolve_secure_runtime_config_path(
     if not config_path.is_absolute():
       config_path = (Path(app_root) / config_path).resolve()
     if not config_path.exists():
-      raise ValueError(
-          f'Secure runtime config file not found: {config_path}'
-      )
+      raise ValueError(f'Secure runtime config file not found: {config_path}')
     return config_path
 
   if is_env_enabled(SECURE_RUNTIME_DISABLE_ENV):
@@ -209,9 +207,7 @@ def resolve_secure_runtime_config_path(
     if not config_path.is_absolute():
       config_path = (app_root / config_path).resolve()
     if not config_path.exists():
-      raise ValueError(
-          f'Secure runtime config file not found: {config_path}'
-      )
+      raise ValueError(f'Secure runtime config file not found: {config_path}')
     return config_path
 
   for candidate_name in _CONFIG_FILE_CANDIDATES:

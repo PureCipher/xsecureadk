@@ -39,8 +39,8 @@ from .runtime import SecureRuntimeBuilder
 from .runtime_plugin import SECURE_METADATA_KEY
 from .runtime_plugin import SecureRuntimePlugin
 from .signing import HmacKeyring
-from .signing import SignatureEnvelope
 from .signing import payload_hash
+from .signing import SignatureEnvelope
 
 __all__ = [
     'AgentIdentity',

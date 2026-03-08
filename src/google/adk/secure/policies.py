@@ -196,8 +196,7 @@ class SimplePolicyEngine(BasePolicyEngine):
           matched_rule=allow_rule.name,
           risk_score=allow_rule.risk_score,
           capability_ttl_seconds=(
-              allow_rule.max_ttl_seconds
-              or self._default_capability_ttl_seconds
+              allow_rule.max_ttl_seconds or self._default_capability_ttl_seconds
           ),
       )
 

@@ -667,9 +667,7 @@ def _stage_secure_config(
   """Stages an explicit SecureADK config file into the deployment image."""
   config_path = os.path.abspath(secure_config)
   if not os.path.exists(config_path):
-    raise FileNotFoundError(
-        f'SecureADK config file not found: {config_path}'
-    )
+    raise FileNotFoundError(f'SecureADK config file not found: {config_path}')
 
   _, suffix = os.path.splitext(config_path)
   staged_name = '.secureadk.deploy' + (suffix or '.yaml')
@@ -699,8 +697,8 @@ def _validate_agent_engine_secure_config_support(
   if not config_path:
     return
 
-  from .utils.secure_runtime_config import SecureRuntimeFileConfig
   from .utils.secure_runtime_config import _load_config_data
+  from .utils.secure_runtime_config import SecureRuntimeFileConfig
 
   try:
     config = SecureRuntimeFileConfig.model_validate(
@@ -708,8 +706,7 @@ def _validate_agent_engine_secure_config_support(
     )
   except Exception as e:
     raise click.ClickException(
-        'Invalid SecureADK config for `adk deploy agent_engine`: '
-        f'{e}'
+        f'Invalid SecureADK config for `adk deploy agent_engine`: {e}'
     ) from e
   if config.enabled and config.artifact_sealing.enabled:
     raise click.ClickException(

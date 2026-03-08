@@ -116,9 +116,7 @@ class CapabilityVault:
       raise PermissionError(decision.reason)
 
     issued_at = platform_time.get_time()
-    ttl_seconds = (
-        decision.capability_ttl_seconds or self.default_ttl_seconds
-    )
+    ttl_seconds = decision.capability_ttl_seconds or self.default_ttl_seconds
     token = CapabilityToken(
         token_id=str(platform_uuid.new_uuid()),
         nonce=str(platform_uuid.new_uuid()),

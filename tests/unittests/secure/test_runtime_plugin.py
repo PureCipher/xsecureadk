@@ -18,24 +18,20 @@ import asyncio
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.apps.app import App
-from google.adk.artifacts.in_memory_artifact_service import (
-    InMemoryArtifactService,
-)
-from google.adk.sessions.in_memory_session_service import (
-    InMemorySessionService,
-)
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.secure import AgentIdentity
 from google.adk.secure import capability_state_key
 from google.adk.secure import CapabilityVault
 from google.adk.secure import IdentityRegistry
 from google.adk.secure import InMemoryProvenanceLedger
-from google.adk.secure import AgentIdentity
 from google.adk.secure import PolicyRule
-from google.adk.secure import SECURE_METADATA_KEY
-from google.adk.secure import SecureRuntimePlugin
-from google.adk.secure import SecureRuntimeBuilder
 from google.adk.secure import SealedArtifactService
+from google.adk.secure import SECURE_METADATA_KEY
+from google.adk.secure import SecureRuntimeBuilder
+from google.adk.secure import SecureRuntimePlugin
 from google.adk.secure import SimplePolicyEngine
 from google.adk.secure.signing import HmacKeyring
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
@@ -59,9 +55,11 @@ def _build_secure_plugin(
         )
     )
   plugin = SecureRuntimePlugin(
-      identity_registry=IdentityRegistry(
-          [AgentIdentity(agent_name='judge', key_id='judge-key', roles=('judge',))]
-      ),
+      identity_registry=IdentityRegistry([
+          AgentIdentity(
+              agent_name='judge', key_id='judge-key', roles=('judge',)
+          )
+      ]),
       capability_vault=CapabilityVault(
           policy_engine=SimplePolicyEngine(rules),
           keyring=keyring,
@@ -105,7 +103,9 @@ def test_secure_runtime_plugin_denies_unauthorized_tool_calls():
   runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
   events = runner.run('start trial')
 
-  assert testing_utils.simplify_events(events)[1][1].function_response.response == {
+  assert testing_utils.simplify_events(events)[1][
+      1
+  ].function_response.response == {
       'status': 'denied',
       'reason': 'Denied by policy engine default effect.',
       'tool': 'sealed_evidence',
@@ -133,7 +133,9 @@ def test_secure_runtime_plugin_issues_capability_and_signs_model_output():
   runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
   events = runner.run('start trial')
 
-  function_response = testing_utils.simplify_events(events)[1][1].function_response
+  function_response = testing_utils.simplify_events(events)[1][
+      1
+  ].function_response
   assert function_response.response == {'capability_present': True}
 
   final_event = events[-1]
@@ -144,9 +146,7 @@ def test_secure_runtime_plugin_issues_capability_and_signs_model_output():
   assert any(
       entry.event_type == 'capability_issued' for entry in ledger_entries
   )
-  assert any(
-      entry.event_type == 'tool_executed' for entry in ledger_entries
-  )
+  assert any(entry.event_type == 'tool_executed' for entry in ledger_entries)
   assert any(
       entry.event_type == 'model_response_signed' for entry in ledger_entries
   )
@@ -164,9 +164,11 @@ def test_secure_runtime_builder_wraps_app_and_services():
       'seal-key': 'seal-secret',
   })
   builder = SecureRuntimeBuilder(
-      identity_registry=IdentityRegistry(
-          [AgentIdentity(agent_name='judge', key_id='judge-key', roles=('judge',))]
-      ),
+      identity_registry=IdentityRegistry([
+          AgentIdentity(
+              agent_name='judge', key_id='judge-key', roles=('judge',)
+          )
+      ]),
       capability_vault=CapabilityVault(
           policy_engine=SimplePolicyEngine([]),
           keyring=keyring,
@@ -184,7 +186,5 @@ def test_secure_runtime_builder_wraps_app_and_services():
   )
 
   assert runner.app is not None
-  assert any(
-      plugin.name == 'secure_runtime' for plugin in runner.app.plugins
-  )
+  assert any(plugin.name == 'secure_runtime' for plugin in runner.app.plugins)
   assert isinstance(runner.artifact_service, SealedArtifactService)

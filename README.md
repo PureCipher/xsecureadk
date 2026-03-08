@@ -96,6 +96,39 @@ deploying agents:
 
 * **[Documentation](https://google.github.io/adk-docs)**
 
+## 🔐 SecureADK Runtime
+
+This repository also includes an optional SecureADK runtime extension. It adds
+runtime identity binding, policy-gated tool execution, response signing,
+provenance logging, and optional artifact sealing on top of the normal ADK
+execution path.
+
+SecureADK can be enabled in two ways:
+
+- Put `secureadk.yaml`, `secureadk.yml`, or `secureadk.json` in the agent or
+  app root for autodiscovery.
+- Pass `--secure_config /path/to/config` explicitly.
+
+The explicit flag is supported by:
+
+- `adk run`
+- `adk web`
+- `adk api_server`
+- `adk deploy cloud_run`
+- `adk deploy gke`
+- `adk deploy agent_engine`
+
+You can disable autodiscovered SecureADK config for a process with
+`ADK_DISABLE_SECURE_RUNTIME=1`.
+
+`adk deploy agent_engine` supports SecureADK runtime loading, policy, signing,
+and provenance. It does not support SecureADK artifact sealing in this repo,
+because the Agent Engine deployment path does not expose artifact-service
+wrapping.
+
+For a minimal working example, see
+`contributing/samples/secureadk_quickstart`.
+
 ## 🏁 Feature Highlight
 
 ### Define a single agent:

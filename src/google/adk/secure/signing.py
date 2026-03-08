@@ -93,9 +93,7 @@ class HmacKeyring:
     if not secrets_by_key_id:
       raise ValueError('At least one signing key must be provided.')
     self._secrets_by_key_id = {
-        key_id: (
-            secret if isinstance(secret, bytes) else secret.encode('utf-8')
-        )
+        key_id: secret if isinstance(secret, bytes) else secret.encode('utf-8')
         for key_id, secret in secrets_by_key_id.items()
     }
 

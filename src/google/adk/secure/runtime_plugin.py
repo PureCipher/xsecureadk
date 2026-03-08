@@ -82,15 +82,17 @@ class SecureRuntimePlugin(BasePlugin):
           session_id=invocation_context.session.id,
           invocation_id=invocation_context.invocation_id,
           payload={
-              'userContentHash': payload_hash(
-                  invocation_context.user_content.model_dump(
-                      by_alias=True,
-                      exclude_none=True,
-                      mode='json',
+              'userContentHash': (
+                  payload_hash(
+                      invocation_context.user_content.model_dump(
+                          by_alias=True,
+                          exclude_none=True,
+                          mode='json',
+                      )
                   )
-              )
-              if invocation_context.user_content is not None
-              else None,
+                  if invocation_context.user_content is not None
+                  else None
+              ),
           },
       )
     return None
@@ -237,9 +239,9 @@ class SecureRuntimePlugin(BasePlugin):
     cache_key = self._capability_key(tool_context)
     self._issued_capabilities[cache_key] = token
     if tool_context.function_call_id:
-      tool_context.state[capability_state_key(tool_context.function_call_id)] = (
-          token.model_dump(by_alias=True, exclude_none=True, mode='json')
-      )
+      tool_context.state[
+          capability_state_key(tool_context.function_call_id)
+      ] = token.model_dump(by_alias=True, exclude_none=True, mode='json')
     if self._ledger is not None:
       await self._ledger.append(
           event_type='capability_issued',

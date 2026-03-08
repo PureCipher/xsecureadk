@@ -6,6 +6,11 @@ This folder hosts resources for ADK contributors, for example, testing samples e
 
 Samples folder host samples to test different features. The samples are usually minimal and simplistic to test one or a few scenarios.
 
+Notable samples in this repo include:
+
+- `contributing/samples/secureadk_quickstart` for config-driven SecureADK
+  runtime wiring across `adk run`, `adk web`, and deploy commands.
+
 **Note**: This is different from the [google/adk-samples](https://github.com/google/adk-samples) repo, which hosts more complex e2e samples for customers to use or modify directly.
 
 ## ADK project and architecture overview
